@@ -1,0 +1,1255 @@
+---
+title: "Figures and Tables"
+author: "J.P. Meagher"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    keep_tex: true
+    fig_crop: false
+---
+
+# Preliminaries
+
+Load required packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+# Load required packages
+# devtools::install_github("jpmeagher/onlineMessageboardActivity")
+library(onlineMessageboardActivity)
+library(dplyr)
+library(ggplot2)
+library(xtable)
+library(HDInterval)
+library(reshape2)
+library(latex2exp)
+library(bridgesampling)
+library(magrittr)
+library(lubridate)
+library(zoo)
+library(ggpubr)
+```
+
+
+```{r plot_settings}
+# Set a general theme for ggplot to ensure consistency
+my_theme <- theme_classic() +
+  theme(
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 8),
+    plot.title = element_text(size = 12),
+    plot.subtitle = element_text(size = 10),
+    legend.text = element_text(size = 7)
+  )
+```
+
+# Background
+
+## Exploratory analysis
+
+```{r activity_levels}
+# First we explore the circadian rhythm of activity on the sub-reddit.
+# messageboard_df is the full dataset of discussions on the r/ireland subreddit
+mean_nodes <- nrow(messageboard_df) / (42 * 24) # Overall mean nodes per hour
+n_buckets <- 5 # number of discrete buckets per hour
+window <- 3 # number of hours in moving average
+
+gg_activity <- messageboard_df %>% 
+  # filter(parent_id == 0) %>% # include this line if only interested in posts
+  # separate out element of the timestap for the node
+  mutate(moy = month(time)) %>% 
+  mutate(dow = wday(time, week_start = 1)) %>% 
+  mutate(dow = factor(dow)) %>% 
+  mutate(dom = day(time)) %>% 
+  mutate(hod = hour(time)) %>% 
+  mutate(moh = minute(time)) %>% 
+  # compute the number of nodes in each time bucket
+  mutate(bucket = sapply(moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1)))) %>% 
+  group_by(moy, dow, dom, hod, bucket) %>% 
+  summarise(count = max(0, length(id))) %>% 
+  ungroup() %>% 
+  # get midpoint time associated with each bucket
+  mutate(t = hod + (bucket - 0.5) / n_buckets) %>% 
+  mutate(date = paste0(dom, "-", moy)) %>% 
+  # get a rolling average
+  mutate(ma_count = n_buckets * rollmean(count, window * n_buckets, na.pad = TRUE)) %>% 
+  ggplot() +
+  geom_line(aes(x = t, y = ma_count, group = date, col = dow), alpha = 0.5) +
+  # geom_hline(yintercept = mean_nodes, lty = 2) + # include this line to see overall mean
+  my_theme +
+  theme(legend.position = "none") +
+  scale_color_viridis_d() +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = TeX("Daily activity levels on r/ireland"),
+    subtitle = paste0(window, "-hour moving average"),
+    x = "Hour of the day (IST)",
+    y = "Nodes per hour"
+  )
+```
+
+
+```{r data_snapshot}
+# Plot illustrating the data structure
+# select an interval to examine
+lower <- ymd_hms(20190415160000)
+upper <- lower + minutes(30)
+# identify the discussions in the interval
+discussions <- messageboard_df %>% 
+  filter(parent_id == 0) %>% 
+  filter(time > lower & time < upper) %>% 
+  use_series(discussion)
+# pull out and prepare the subset of discussions
+subset <- messageboard_df %>% 
+  filter(discussion %in% discussions) %>% 
+  mutate(parent_id = refactor_branching_structure(
+    id = id,
+    parent_id = parent_id,
+    is_immigrant = (parent_id == 0),
+    S = 20
+  )) %>% 
+  mutate(id = 1:nrow(.)) %>% 
+  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>% 
+  mutate(t = t - min(t)) %>%
+  group_by(discussion) %>% 
+  mutate(tau = t - min(t)) %>% 
+  ungroup() %>% 
+  mutate(type = parent_id != 0) %>% 
+  mutate(type = factor(type, labels = c("post", "comment")))
+# specify the generation of each node
+# loop through the subset identifynig the parents generation
+generation <- rep(NA, nrow(subset))
+generation[subset$parent_id == 0] <- 0
+for (i in 1:nrow(subset)) {
+  if (is.na(generation[i])) {
+    generation[i] <- generation[subset$parent_id[i]] + 1
+  }
+}
+subset <- subset %>% 
+  mutate(generation = generation) %>% 
+  mutate(generation = factor(generation, ordered = TRUE)) %>% 
+  mutate(n_offspring = tabulate(parent_id + 1, nbins = nrow(.) + 1)[-1])
+# set the origin for each edge in the branching structure
+# then set a perturbation of the child nodes along the x-axis
+# needed to plot the branching structure clearly
+new_v <- subset$parent_id
+perturb <- source_x <- source_y <- off_ind <- rep(0, nrow(subset))
+per_range <- 0.05
+
+i <- 1
+for (i in 1:nrow(subset)) {
+  if (subset$parent_id[i] != 0) {
+    off_ind[new_v[i]] <- off_ind[new_v[i]]  + 1
+    if (subset$generation[i] == 1) {
+      perturb[i] <- seq(-per_range, per_range, length.out = subset$n_offspring[new_v[i]] + 2) [off_ind[new_v[i]] + 1]
+    } else {
+      perturb[i] <- perturb[new_v[i]] + seq(-per_range, per_range, length.out = subset$n_offspring[new_v[i]] + 2) [off_ind[new_v[i]] + 1]
+    }
+    source_x[i] <- (subset$time - (seconds((subset$tau + perturb) * 60 * 60)))[new_v[i]]
+    source_y[i] <- subset$tau[new_v[i]]
+  } else {
+    source_x[i] <- subset$time[i]
+    source_y[i] <- NA
+  }
+}
+# convert x axis to clock time
+subset$perturb <- perturb
+subset$source_x <- as.POSIXct(source_x, origin="1970-01-01", tz = "Europe/London")
+subset$source_y <- source_y
+# make plot
+gg_snapshot <- ggplot(subset) +
+  geom_segment(
+    aes(
+      x = time - seconds((tau + perturb) * 60 * 60), y = tau + 1,
+      xend = source_x, yend = source_y + 1
+    )
+  ) +
+  geom_point(
+    aes(x = time - seconds((tau + perturb) * 60 * 60), y = tau + 1, color = generation),
+  ) +
+  # coord_cartesian(
+  #   xlim = c(0, 0.5)
+  # ) +
+  my_theme +
+  theme(
+    legend.position = "none"
+  ) +
+  scale_y_log10(breaks = 2^(0:5), labels = 2^(0:5) - 1) +
+  scale_color_viridis_d() +
+  # ylim(0, 30) +
+  labs(
+    title = "The structure of discussion trees on r/ireland",
+    x = "Monday, April 15, 2019",
+    y = TeX("Hours since post"),
+    color = NULL
+  )
+```
+
+Plot the moving average for replies throughout the day
+
+```{r mean_replies}
+n_buckets <- 5
+window <- 3
+
+gg_mean_replies <- messageboard_df %>% 
+  mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+  mutate(moy = month(time)) %>% 
+  mutate(dow = wday(time, week_start = 1)) %>% 
+  mutate(dow = factor(dow)) %>% 
+  mutate(dom = day(time)) %>% 
+  mutate(hod = hour(time)) %>% 
+  mutate(moh = minute(time)) %>% 
+  mutate(bucket = sapply(moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1)))) %>% 
+  filter(parent_id == 0) %>%
+  group_by(moy, dow, dom, hod, bucket) %>% 
+  summarise(replies = mean(z)) %>% 
+  ungroup() %>% 
+  mutate(t = hod + (bucket - 0.5) / n_buckets) %>% 
+  mutate(date = paste0(dom, "-", moy)) %>%
+  mutate(ma_replies = rollmean(replies, window * n_buckets, na.pad = TRUE)) %>%
+  group_by(t) %>% 
+  summarise(mean_replies = mean(ma_replies, na.rm = T)) %>% 
+  cbind(type = "post") %>% 
+  rbind(
+    messageboard_df %>% 
+      mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+      mutate(moy = month(time)) %>% 
+      mutate(dow = wday(time, week_start = 1)) %>% 
+      mutate(dow = factor(dow)) %>% 
+      mutate(dom = day(time)) %>% 
+      mutate(hod = hour(time)) %>% 
+      mutate(moh = minute(time)) %>% 
+      mutate(bucket = sapply(moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1)))) %>% 
+      filter(parent_id != 0) %>%
+      group_by(moy, dow, dom, hod, bucket) %>% 
+      summarise(replies = mean(z)) %>% 
+      ungroup() %>% 
+      mutate(t = hod + (bucket - 0.5) / n_buckets) %>% 
+      mutate(date = paste0(dom, "-", moy)) %>%
+      mutate(ma_replies = rollmean(replies, window * n_buckets, na.pad = TRUE)) %>%
+      group_by(t) %>% 
+      summarise(mean_replies = mean(ma_replies, na.rm = T)) %>% 
+      cbind(type = "comment")
+  ) %>% 
+  ggplot() +
+  geom_line(aes(x = t, y = mean_replies, color = type)) +
+  my_theme +
+  theme(legend.position = "bottom") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  scale_color_viridis_d() +
+  labs(
+    title = TeX("Replies on r/ireland"),
+    subtitle = paste0(window, "-hour moving average"),
+    x = "Hour of the day (IST)",
+    y = "Number of replies",
+    color = NULL
+  )
+  
+```
+
+Plot the distribution for the number of replies
+
+```{r reply_distribution}
+R <- messageboard_df %>% 
+  mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+  use_series(z) %>% 
+  mean
+  
+gg_reply_distribution <- left_join(
+  messageboard_df %>% 
+    mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+    filter(parent_id == 0) %>% 
+    use_series(z) %>% 
+    tabulate() %>% 
+    divide_by(sum(.)) %>% 
+    data.frame(Posts = .) %>% 
+    mutate(n = -1 + 1:nrow(.)) %>% 
+    filter(Posts != 0),
+  messageboard_df %>% 
+    mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+    filter(parent_id != 0) %>% 
+    use_series(z) %>% 
+    tabulate() %>% 
+    divide_by(sum(.)) %>% 
+    data.frame(Comments = .) %>% 
+    mutate(n = -1 + 1:nrow(.)) %>% 
+    filter(Comments != 0)
+) %>% 
+  reshape2::melt(id.vars = "n") %>% 
+  ggplot() +
+  geom_line(
+    data = data.frame(x = 0:9, y = dpois(0:9, lambda = R)),
+    aes(x = x, y = y), lty = 2
+  ) +
+  geom_point(aes(x = n, y = value, color = variable)) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  scale_y_log10() +
+  my_theme +
+  theme(legend.position = "top") +
+  labs(
+    title = TeX("Reply count distribution"),
+    subtitle = "",
+    x = "Number of replies",
+    y = "Density (log scale)",
+    fill = NULL,
+    color = NULL
+  )
+```
+
+Plot the generation interval distributions at different times of day
+
+```{r first_reply_interval}
+gg_reply_interval_0_2 <- messageboard_df %>% 
+  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>% 
+  mutate(parent_t = sapply(parent_id, function(i){
+    if (i == 0) {
+      out <- NA
+    } else {
+      out <- t[i]
+    }
+    out
+  })) %>% 
+  mutate(type = sapply(parent_id, function(i){
+    if (i == 0) {
+      out <- NA
+    } else {
+      if (parent_id[i] == 0) {
+        out <- "post"
+      } else {
+        out <- "comment"
+      }
+    }
+    out
+  })) %>% 
+  mutate(tau = t - parent_t) %>% 
+  mutate(parent_tod = mod(parent_t, 24)) %>% 
+  mutate(parent_tod = floor(parent_tod)) %>% 
+  filter(parent_tod > 0 & parent_tod < 2) %>%
+  filter(tau < 24) %>% 
+  ggplot() +
+  geom_histogram(
+    aes(x = tau, y = ..density.., fill = type),
+    alpha = 0.5, position = "identity",
+    binwidth = 0.5, boundary = 0) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  my_theme +
+  theme(legend.position = "top") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = "Reply interval distribution",
+    subtitle = "Parent nodes during 00:00-02:00",
+    x = TeX("Hours since parent node"),
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  )
+```
+
+```{r second_reply_interval}
+gg_reply_interval_12_14 <- messageboard_df %>% 
+  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>% 
+  mutate(parent_t = sapply(parent_id, function(i){
+    if (i == 0) {
+      out <- NA
+    } else {
+      out <- t[i]
+    }
+    out
+  })) %>% 
+  mutate(type = sapply(parent_id, function(i){
+    if (i == 0) {
+      out <- NA
+    } else {
+      if (parent_id[i] == 0) {
+        out <- "post"
+      } else {
+        out <- "comment"
+      }
+    }
+    out
+  })) %>% 
+  mutate(tau = t - parent_t) %>% 
+  mutate(parent_tod = mod(parent_t, 24)) %>% 
+  mutate(parent_tod = floor(parent_tod)) %>% 
+  # filter(parent_tod %in% c(0, 6, 12, 18)) %>%
+  filter(parent_tod > 12 & parent_tod < 14) %>%
+  filter(tau < 24) %>% 
+  ggplot() +
+  geom_histogram(
+    aes(x = tau, y = ..density.., fill = type),
+    alpha = 0.5, position = "identity",
+    binwidth = 0.5, boundary = 0) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  my_theme +
+  theme(legend.position = "top") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = "Reply interval distribution",
+    subtitle = "Parent nodes during 12:00-14:00",
+    x = TeX("Hours since parent node"),
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  )
+```
+
+Produce plots for the manuscript
+
+```{r data_exploration, fig.height=4, fig.width=6}
+ggarrange(
+  gg_snapshot,
+  gg_activity,
+  labels = "auto",
+  nrow = 2
+)
+```
+
+```{r reply_distribution_exploration, fig.height=3, fig.width=6}
+ggarrange(
+  gg_mean_replies, gg_reply_distribution,
+  nrow = 1, labels = 'auto',
+  common.legend = TRUE, legend = 'bottom'
+)
+```
+
+```{r reply_interval_exploration, fig.height=3, fig.width=6}
+ggarrange(
+  gg_reply_interval_0_2, gg_reply_interval_12_14,
+  nrow = 1, labels = 'auto',
+  common.legend = TRUE, legend = 'bottom'
+)
+ 
+```
+
+
+# Methods
+
+## Generative model
+
+Simulate a cluster
+
+```{r}
+day <- 24
+f <- 1 / c(day, day / 2)
+omega <- 2 * pi * f
+alpha <- c(-0.34, -0.47, -0.18, 0.34)
+
+set.seed(108)
+simulated_cluster <- simulate_gpm_cluster_process(
+  t_seed = 0, branching_structure_seed = 0,
+  observation_horizon = 0, simulation_horizon = 48,
+  immigrant_reproduction_number = 4,
+  immigrant_gi_exp_decay_rate = 0.1,
+  immigrant_dispersion_parameter = 1,
+  offspring_reproduction_number = 2,
+  offspring_gi_exp_decay_rate = 0.25,
+  offspring_dispersion_parameter = 0.25,
+  sinusoid_coefficients = alpha,
+  sinusoid_frequencies = omega
+)
+```
+
+```{r}
+# minor ajustment of one point to improve the aesthetic of figure
+simulated_cluster$t[7] <- simulated_cluster$t[7] + 1.5
+```
+
+plot the simulated cluster illustrating the individual reproduction numbers and the branching structure
+
+```{r}
+gg_sim_clust <- simulated_cluster %>% 
+  mutate(type = parent_id == 0) %>% 
+  mutate(type = ifelse(type, "post", "comment")) %>% 
+  mutate(y_pos = c(
+    -0.025, -0.025, -0.15, -0.1, -0.05, 
+    0, 0.01, -0.15, -0.075, 0.05, 
+    -0.09, -0.025, 0.1, 0.025, 0.025,
+    -0.025, 0.175, 0.075, 0.18)) %>% 
+  mutate(xend = c(NA, t[parent_id])) %>% 
+  mutate(yend = c(NA, y_pos[parent_id])) %>% 
+  ggplot() +
+  geom_segment(aes(x = t, y = y_pos, xend = xend, yend = yend)) +
+  geom_point(aes(x = t, y = y_pos, size = nu, color = type)) +
+  my_theme +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank()) +
+  scale_x_continuous(breaks = (0:8)*6, limits = c(0, 48)) +
+  scale_color_viridis_d() +
+  labs(
+    title = "A simulated cluster process",
+    x = NULL,
+    )
+```
+
+plot the activity function modelling the circadian rhythm
+
+```{r}
+gg_activity <- data.frame(t = seq(0, 48, length.out = 1001)) %>% 
+  mutate(alpha = 1 + sinusoidal_function(t, alpha, omega)) %>% 
+  ggplot() +
+  geom_line(aes(x =t , y = alpha)) +
+  my_theme +
+  scale_x_continuous(breaks = (0:8)*6) +
+  labs(
+    title = "Activity function",
+    x = NULL,
+    y = TeX("\\alpha (t)")
+  )
+```
+
+plot the excitation function associated with each node
+
+```{r}
+gg_excitation <- data.frame(t = seq(0, 48, length.out = 1001)) %>% 
+  mutate(excitation = sapply(t, function(x) sum(dexp(x - simulated_cluster$t, rate = c(0.1, rep(0.25, 18)))))) %>% 
+  ggplot() +
+  geom_line(aes(x = t , y = excitation)) +
+  my_theme +
+  scale_x_continuous(breaks = (0:8)*6) +
+  labs(
+    title = "Excitation function",
+    x = NULL,
+    y = TeX("$\\sum_{t_j < t} \\rho (t - t_j | \\beta_j)$")
+  )
+```
+
+plot the condititional intensity for the simulated cluster
+
+```{r}
+gg_intensity <- data.frame(t = seq(0, 48, length.out = 1001)) %>% 
+  mutate(alpha = 1 + sinusoidal_function(t, alpha, omega)) %>% 
+  mutate(excitation = sapply(t, function(x) sum(simulated_cluster$nu * dexp(x - simulated_cluster$t, rate = c(0.1, rep(0.25, 18)))))) %>% 
+  mutate(intensity = alpha * excitation) %>% 
+  ggplot() +
+  geom_line(aes(x = t , y = intensity)) +
+  my_theme +
+  scale_x_continuous(breaks = (0:8)*6) +
+  labs(
+    title = "Intensity",
+    x = "t",
+    y = TeX("$\\lambda^*$(t)")
+  )
+```
+
+create the plot for the manuscript
+
+```{r model_form, fig.height=6, fig.width=6}
+ggarrange(
+  gg_sim_clust, gg_activity, gg_excitation, gg_intensity,
+  nrow = 4, labels = "auto", align = "hv"
+)
+```
+
+
+# Results
+
+some helper functions for the tables
+
+```{r helper_functions}
+mean_sd <- function (x, digits = 2) 
+{
+    n <- sum(!is.na(x))
+    if(n == 0) return("-")
+    m <- round(mean(x), digits = digits)
+    s <- round(stats::sd(x), digits = digits)
+    paste(m, " (", s, ")", sep = "")
+}
+
+mean_se <- function (x, digits = 2)
+{
+  n <- sum(!is.na(x))
+  if (n == 0)
+    return("-")
+  m <- mean(x)
+  s <- (sd(x) / sqrt(n))
+  paste0(sprintf(m, fmt = paste0('%#.', digits, 'f')),
+        " (",
+        sprintf(s, fmt = paste0('%#.', digits, 'f')),
+        ")"
+        )
+}
+
+mean_ci <- function (
+    x, alpha = 0.05, digits = 2
+    ) 
+{
+  if(all(is.na(x))) return("-")
+  m <- round(mean(x), digits = digits)
+  quants <- round(quantile(x, prob = c(alpha / 2, 1 - alpha / 2)), digits = digits)
+  paste(m, " (", quants[1], ", ", quants[2], ")", sep = "")
+}
+
+sum_se <- function (x, digits = 2)
+{
+  n <- sum(!is.na(x))
+  if (n == 0)
+    return("-")
+  m <- sum(x)
+  s <- stats::sd(x) * sqrt(n)
+  paste0(sprintf(m, fmt = paste0('%#.', digits, 'f')),
+        " (",
+        sprintf(s, fmt = paste0('%#.', digits, 'f')),
+        ")"
+        )
+}
+
+se <- function(x){
+  sd(x) / sqrt(length(x))
+}
+```
+
+specify hyperparameters for the model
+
+```{r hyperparameters}
+K <- 2
+omega <- 2 * pi * (1:K) / 24
+```
+
+## Inference
+
+load the fitted models
+
+```{r fitted_models}
+fit_M1 <- readRDS("models/fit_M1.RDS")
+fit_M2 <- readRDS("models/fit_M2.RDS")
+fit_M3 <- readRDS("models/fit_M3.RDS")
+fit_M4 <- readRDS("models/fit_M4.RDS")
+fit_M5 <- readRDS("models/fit_M5.RDS")
+```
+
+load the evidence estimates
+
+```{r evidence}
+evidence_M1 <- readRDS("evidence/evidence_M1.RDS")
+evidence_M2 <- readRDS("evidence/evidence_M2.RDS")
+evidence_M3 <- readRDS("evidence/evidence_M3.RDS")
+evidence_M4 <- readRDS("evidence/evidence_M4.RDS")
+evidence_M5 <- readRDS("evidence/evidence_M5.RDS")
+```
+
+create table presenting parameter summary
+
+```{r}
+parameter_table_df <- fit_M1 %>% 
+  as.data.frame() %>% 
+  select("$\\mu_1$" = `mu[1]`, "$\\eta_1$" = `eta[1]`) %>%
+  mutate(Model = "$\\mathcal M_1$") %>% 
+  full_join(
+    fit_M2 %>% 
+      as.data.frame() %>% 
+      select("$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`, "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`) %>%
+      mutate(Model = "$\\mathcal M_2$")
+  ) %>% 
+  full_join(
+    fit_M3 %>% 
+      as.data.frame() %>% 
+      select("$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`, "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`) %>%
+      mutate(Model = "$\\mathcal M_3$")
+  ) %>% 
+  full_join(
+    fit_M4 %>% 
+      as.data.frame() %>% 
+      select(
+        "$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`, 
+        "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`,
+        "$\\psi_1$" = `psi[1]`, "$\\psi_2$" = `psi[2]`) %>%
+      mutate(Model = "$\\mathcal M_4$")
+  ) %>% 
+  full_join(
+    fit_M5 %>% 
+      as.data.frame() %>% 
+      select(
+        "$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`, 
+        "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`,
+        "$\\psi_1$" = `psi[1]`) %>%
+      mutate(Model = "$\\mathcal M_5$")
+  ) %>% 
+  group_by(Model) %>% 
+  summarize(across(c("$\\mu_1$", "$\\mu_2$", "$\\eta_1$", "$\\eta_2$", "$\\psi_1$", "$\\psi_2$"), mean_sd, digits = 2))
+```
+
+copy and paste the output for this code into the manuscript
+
+```{r parameter_table, results='asis'}
+parameter_table_df %>% 
+  xtable(
+    label = "tab:parameter_estimates",
+    caption = "Posterior mean (standard deviation) for the parameters $\\boldsymbol \\eta$, $\\boldsymbol \\mu$, and $\\boldsymbol \\psi$ within each of our candidate models. Considering each of the parameters in turn, the broad agreement on $\\boldsymbol \\mu$ across all the candidate models suggests that the expected number of offspring does not differ between immigrants and offspring. Differences in the offspring distributions for immigrants and offspring are manifest in the memory decay rate, which indicates that the expected generation interval for immigrants is longer than that for offspring. Finally, the values for $\\boldsymbol \\psi$ inferred by $\\mathcal M_4$ suggest that immigrant points have a moderately heterogeneous offspring process while the offspring process for offspring is relatively homogeneous. As such, we include $\\mathcal M_5$ in our analysis, which assumes heterogeneous immigrant and homogeneous offspring offspring processes, respectively.",
+    align = "|l|c|c|c|c|c|c|c|"
+  ) %>% 
+  print.xtable(
+    include.rownames = F,
+    type = "latex", sanitize.text.function = function(x){x},
+    comment=FALSE
+    )
+```
+
+some calculations to be included in the manuscript
+
+```{r posterior_exploration, eval = FALSE}
+par <- "psi"
+
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select(starts_with(par)) %>% 
+  melt() %>% 
+  ggplot() +
+  geom_histogram(aes(x = value, y = ..density.., fill = variable), position = 'identity',alpha = 0.5)
+  
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select(starts_with(par)) %>% 
+  summarise_all(quantile, probs = 0.025)
+
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select(starts_with(par)) %>% 
+  summarise_all(quantile, probs = 0.5)
+
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select(starts_with(par)) %>% 
+  summarise_all(quantile, probs = 0.975)
+
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select(starts_with(par)) %>% 
+  apply(1, function(x) x[1] > x[2]) %>% 
+  mean()
+
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select("mu[1]", "psi[1]") %>% 
+  apply(1, function(par) dnbinom(0, size = par[2], mu = par[1])) %>% 
+  quantile(probs = c(0.025, 0.975))
+
+fit_M4 %>% 
+  as.data.frame() %>% 
+  select("mu[2]", "psi[2]") %>% 
+  apply(1, function(par) dnbinom(0, size = par[2], mu = par[1])) %>% 
+  quantile(probs = c(0.025, 0.975))
+```
+
+```{r, eval = FALSE}
+assessEpidemicCurves::compute_transmission_quantile(0.5, 1)
+```
+
+plot the inferred activity function
+
+```{r alpha_inference, fig.height=3, fig.width=7}
+t <- seq(0, 24, length.out = 101)
+
+fit_M3 %>% 
+  as.data.frame() %>% 
+  select(starts_with('alpha')) %>% 
+  apply(1, function(x) 1 + sinusoidal_function(
+    t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+  )) %>% 
+  data.frame(model = 2, t, .) %>%
+  rbind(
+    fit_M4 %>% 
+      as.data.frame() %>% 
+      select(starts_with("alpha")) %>% 
+      apply(1, function(x) 1 + sinusoidal_function(
+        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+      )) %>% 
+      data.frame(model = 3, t, .)
+  ) %>% 
+  rbind(
+    fit_M5 %>% 
+      as.data.frame() %>% 
+      select(starts_with("alpha")) %>% 
+      apply(1, function(x) 1 + sinusoidal_function(
+        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+      )) %>% 
+      data.frame(model = 4, t, .)
+  ) %>% 
+  melt(id.vars = c("model", "t")) %>% 
+  mutate(model = as.factor(model)) %>% 
+  group_by(model, t) %>%
+  summarise(
+    average = mean(value), 
+    ci.low = hdi(value)[1],
+    ci.up = hdi(value)[2]
+    ) %>% 
+  ungroup(model) %>% 
+  ggplot() +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_ribbon(aes(x = t, ymin = ci.low, ymax = ci.up, fill = model), alpha = 0.25) +
+  geom_line(aes(x = t, y = average, color = model)) +
+  scale_fill_viridis_d(label = c(TeX('$M_3$'), TeX('$M_4$'), TeX('$M_5$'))) +
+  scale_color_viridis_d(label = c(TeX('$M_3$'), TeX('$M_4$'), TeX('$M_5$'))) +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 6)) +
+  my_theme +
+  labs(
+    title = "Absolute-time effect on offspring intensity",
+    x = "Time (24-hour clock)",
+    y  = TeX("$\\alpha (t)$"),
+    color = NULL,
+    fill = NULL
+  )
+```
+
+create table of bayes factors
+
+```{r}
+bf_table_df <-  data.frame(Model = "$\\mathcal {M}_1$",  BF = bayes_factor(evidence_M1, evidence_M4, log = TRUE)$bf %>% round(digits = 2)) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_2$",  BF = bayes_factor(evidence_M2, evidence_M4, log = TRUE)$bf %>% round(digits = 2))
+  ) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_3$",  BF = bayes_factor(evidence_M3, evidence_M4, log = TRUE)$bf %>% round(digits = 2))
+  ) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_4$",  BF = bayes_factor(evidence_M4, evidence_M4, log = TRUE)$bf %>% round(digits = 2))
+  ) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_5$",  BF = bayes_factor(evidence_M5, evidence_M4, log = TRUE)$bf %>% round(digits = 2))
+  ) %>% 
+  mutate("$\\ln \\mathcal{BF}_{l 3}$" = BF) %>% 
+  select(-BF)
+```
+
+copy and paste the output for this code into the manuscript
+
+```{r evidence_estimate, results='asis'}
+bf_table_df %>% 
+  extract(, 2) %>% 
+  t() %>% 
+  set_colnames(
+    c("$\\mathcal {M}_1$", "$\\mathcal {M}_2$","$\\mathcal {M}_3$", "$\\mathcal {M}_4$", "$\\mathcal {M}_5$")
+  ) %>% 
+  set_rownames("$\\ln \\mathcal{BF}_{l4}$") %>% 
+  xtable(
+    label = "tab:bf_estimates",
+    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_4$, that is, $\\ln \\mathcal{BF}_{l4}$ for $l = 1, \\dots, 5$. Note that the evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence and, as a result, the corresponding Bayes factors. We find decisive evidence to support our inclusion of a circadian rhythm in the offspring intensity. In addition, we find decisive support for heterogeneous immigrant reproduction numbers and strong evidence for homogeneous offspring reproduction numbers.",
+    align = "|l|c|c|c|c|c|"
+  ) %>% 
+  print.xtable(
+    include.rownames = T,
+    include.colnames = T,
+    # hline.after = 0:2,
+    type = "latex", sanitize.text.function = function(x){x},
+    comment=FALSE
+    )
+```
+
+## Predictive Performance
+
+load summary of out-of-sample-predictions
+
+```{r predictions}
+prediction_summary <- readRDS('predictions/prediction_summary.RDS')
+# prediction_summary <- readRDS('predictions/train_prediction_summary.RDS')
+```
+
+copy and paste the output for this code into the manuscript
+
+```{r lpd_prediction_table, results='asis'}
+prediction_summary %>%
+  as.data.frame() %>% 
+  # mutate(week = factor(floor(t / (7 * 24)))) %>%
+  # mutate(in_sample = week == 0) %>%
+  select(starts_with('elpd')) %>% 
+  mutate_if(is.numeric,  function(x) x - prediction_summary$elpd_M4) %>% 
+  # group_by(in_sample) %>%
+  # filter(prediction_summary$size > 1) %>% 
+  summarise_all(sum_se, digits = 1) %>% 
+  set_colnames(
+    c("$\\mathcal {M}_1$","$\\mathcal {M}_2$", "$\\mathcal {M}_3$", "$\\mathcal {M}_4$", "$\\mathcal {M}_5$")
+  ) %>% 
+  set_rownames("$\\Delta \\widehat{\\operatorname{lpd}}_{l4}$") %>% 
+  xtable(
+    label = "tab:lpd",
+    caption = "The difference (standard error) in log cluster-wise predictive density on $\\boldsymbol y_{\\operatorname{test}}$ between each model and $\\mathcal M_4$. We find that $\\mathcal M_4$ and $\\mathcal M_5$ offer the best predictive performance and are effectively indistinguishable in terms of $\\operatorname{lpd}$. This provides decisive support for the inclusion of a circadian rhythm and heterogeneous immigrant reproduction numbers in our model for online discussion on the \\texttt{r/ireland} subreddit.",
+    align = "|c|c|c|c|c|c|"
+  ) %>% 
+  print.xtable(
+    include.rownames = T,
+    include.colnames = T,
+    type = "latex", sanitize.text.function = function(x){x},
+    comment=FALSE
+    )
+```
+
+compute crps for the empirical baseline
+
+```{r baseline_crps}
+train_size <- train_df %>% 
+  group_by(discussion) %>% 
+  summarise(size = length(discussion)) %>% 
+  use_series(size)
+
+baseline_crps <- sapply(prediction_summary$size, compute_pwm_crps, pred = train_size, perform_checks = F) %>% 
+  mean()
+```
+
+create the dataframe required to present the crps skill scores
+
+```{r compute_crps}
+crps_df <- prediction_summary %>% 
+  select(contains('crps')) %>% 
+  summarise(across(everything(), list(mean = mean, se = function(x) sd(x) / sqrt(length(x))))) %>% 
+  reshape2::melt() %>% 
+  mutate(variable = as.character(variable)) %>% 
+  mutate(model_s = strsplit(variable, split = "_") %>% sapply(function(x) extract2(x, 2) %>% unlist())) %>% 
+  mutate(stat = strsplit(variable, split = "_") %>% sapply(function(x) extract2(x, 3) %>% unlist())) %>% 
+  mutate(model = strsplit(model_s, split = ".", fixed = T) %>% sapply(function(x) extract2(x, 1) %>% unlist())) %>% 
+  mutate(s = strsplit(model_s, split = ".", fixed = T) %>% sapply(function(x) extract2(x, 2) %>% unlist())) %>% 
+  mutate(s = as.numeric(s)) %>% 
+  mutate(s = c(0, 2^(0:5))[s])
+
+crps_df <- crps_df %>% 
+  filter(stat == 'mean') %>% 
+  mutate(mean = value) %>% 
+  cbind(
+    se = crps_df %>% 
+      filter(stat == 'se') %>% 
+      use_series(value)
+  )
+```
+
+plot illustrating skill scores 
+
+```{r crps_assessment, fig.height=3, fig.width=7}
+crps_df %>%
+  mutate(lower = 1 - ((mean - se) / baseline_crps)) %>% 
+  mutate(upper = 1 - ((mean + se) / baseline_crps)) %>% 
+  mutate(mean = 1 - (mean / baseline_crps)) %>% 
+  ggplot() +
+  geom_point(aes(x = s, y = mean, color = model)) + 
+  geom_line(aes(x = s, y = mean, color = model)) + 
+  geom_errorbar(aes(x = s, ymin = lower, ymax = upper, color = model), width = 0.75) +
+  scale_color_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'), TeX('$M_4$'), TeX('$M_5$'))) +
+  # geom_hline(yintercept = baseline_crps, lty = 2) +
+  my_theme +
+  labs(
+    title = 'Predicting discussion size',
+    y = 'Skill score',
+    x = 'Observation interval (hours after immigrant seed)',
+    color = NULL
+  )
+```
+
+# Goodness-of-fit
+
+load simulated data sets seeded by immigrants in the full data set
+
+```{r}
+discussion_size <- readRDS('predictions/discussion_size.RDS')
+
+# discussion_size <- discussion_size %>% 
+#   filter(t < 24 * 21) 
+
+discussion_size <- discussion_size %>% 
+  filter(discussion %in% train_df$discussion) 
+```
+
+bootstrapped estimates of the ks test statistic
+
+```{r ks_test_statistic}
+ks_boot <- replicate(1000, {
+  tmp_df <- discussion_size %>% 
+  slice_sample(n = 10000, replace = TRUE) 
+  
+  tmp_df %>% 
+    select(starts_with("M")) %>% 
+    apply(2, function(x){
+      ks.test(tmp_df$n, x)$statistic
+    })
+})
+```
+
+plot illustrating ks test statistics
+
+```{r ks_check, fig.height=3, fig.width=6}
+gg_ks <- ks_boot %>% 
+  t() %>% 
+  data.frame() %>% 
+  melt %>% 
+  ggplot() +
+  geom_histogram(
+    aes(x = value, y = ..density.., fill = variable),
+    position = 'identity', alpha = 0.5, binwidth = 0.0025
+  ) +
+  scale_fill_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'), TeX('$M_4$'), TeX('$M_5$'))) +
+  my_theme +
+  theme(
+    legend.position = "bottom"
+  ) +
+  labs(
+    title = "Bootstrap estimates",
+    x = "Kolmogorov-Smirnov test statistic",
+    y = "Density",
+    fill = NULL
+  )
+```
+
+compute the size of each discussion
+
+```{r}
+ds_df <- discussion_size %>% 
+  mutate(hod = floor(tod), moh = mod(tod, 1)) %>% 
+  select(hod, n, M4) %>%
+  group_by(hod) %>% 
+  summarise(across(c("n", "M4"), list(mean = mean, se = se))) %>% 
+  ungroup() %>% 
+  mutate(time = hod + 0.5)
+```
+
+plot the hourly mean discussion size
+
+```{r time_evolution_discussion_size, fig.height=3, fig.width=6}
+gg_time_evo <- ds_df %>% 
+  select(time, ends_with("mean")) %>% 
+  melt(id.vars = "time") %>% 
+  mutate(mean = value) %>% 
+  select(-value) %>% 
+  cbind(
+    ds_df %>% 
+      select(time, ends_with("se")) %>% 
+      melt(id.vars = "time") %>% 
+      select(se = value)
+  ) %>% 
+  ggplot() +
+  geom_hline(yintercept = mean((discussion_size$n)), lty = 2) +
+  geom_errorbar(
+    aes(x = time, ymin = mean - 3 * se, ymax = mean + 3 * se, color = variable)
+  ) +
+  geom_point(
+    aes(x = time, y = mean, color = variable)
+  ) +
+  my_theme +
+  scale_color_viridis_d(labels = c("Empirical data", "Generative model")) +
+  theme(
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = "The time evolution of mean discussion size",
+    x = "Hour of the day",
+    y = "Mean discussion size",
+    color = NULL
+  )
+```
+
+quantile dataframe
+
+```{r}
+qq_df <- discussion_size %>% 
+  select(-time, -t, -tod, -discussion) %>% 
+  melt(id.vars = "n") %>% 
+  group_by(variable) %>% 
+  mutate(n = sort(n), value = sort(value)) %>% 
+  ungroup()
+```
+
+quantile-quantile plots
+
+```{r qq_plots, fig.height=3, fig.width=6}
+gg_qq <- qq_df %>% 
+  ggplot() +
+  geom_abline(slope = 1, intercept = 0) +
+  # geom_point(
+  #   data = transform(qq_df, variable = NULL), 
+  #   aes(x = n, y = value),
+  #   colour = "grey85") +
+  geom_point(
+    aes(x = n, y = value, color = variable)
+  ) +
+  facet_wrap(
+    vars(variable), nrow = 1) +
+  scale_x_log10() +
+  scale_y_log10() +
+  my_theme +
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    legend.position = "bottom",
+  ) +
+  scale_color_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'), TeX('$M_4$'), TeX('$M_5$'))) +
+  labs(
+    title = "Q-Q plots",
+    x = "Empirical discussion sizes",
+    y = "Simulated discussion sizes",
+    color = NULL
+  )
+```
+
+goodness of fit plot for the manuscript. note that a pdf version of this plot results in an overly large file so this figure is saved as a png
+
+```{r gof, fig.height=6, fig.width=6, dev = "png", dpi=120}
+gg_cm_gof <- ggarrange(
+  gg_ks, gg_qq, common.legend = TRUE, labels = "auto", align = "hv"
+)
+
+ggarrange(gg_cm_gof, gg_time_evo, nrow = 2, labels = list("", "c"))
+```
+
+code for computations that inform in discussion in the manuscript
+
+```{r, eval = FALSE}
+discussion_size %>% 
+  select(-time, -t, -tod, -discussion) %>% 
+  melt(id.vars = "n") %>% 
+  group_by(variable) %>% 
+  mutate(n = sort(n), value = sort(value)) %>% 
+  mutate(qqmatch = n == value) %>% 
+  summarise(max_match = max(which(qqmatch)) / 38616)
+
+discussion_size %>% 
+  select(-time, -t, -tod, -discussion) %>% 
+  melt(id.vars = "n") %>% 
+  group_by(variable) %>% 
+  mutate(n = sort(n), value = sort(value)) %>% 
+  mutate(qqmatch = n == value) %>% 
+  summarise(max_match = max(n[qqmatch]))
+
+F0 <- ecdf(discussion_size$n)
+F0(10)
+1 - F0(50)
+
+F1 <- ecdf(discussion_size$M4)
+F1(10)
+
+```
+
+# Appendices
+
+## Circadian Rhythm
+
+```{r count_spectral_density, fig.width=6, fig.height=3}
+spec <- messageboard_df %>% 
+  mutate(hr = hour(time), dy = day(time), mh = month(time)) %>% 
+  group_by(hr, dy, mh) %>% 
+  summarise(N = length(time)) %>%
+  ungroup() %>% 
+  arrange(mh) %>% 
+  arrange(dy) %>% 
+  use_series(N) %>% 
+  spec.pgram(plot = F)
+
+data.frame(f = 24 * spec$freq, d = log(abs(spec$spec)^2)) %>% 
+  ggplot() +
+  geom_line(
+    aes(x = f, y = d)
+  ) +
+  geom_vline(xintercept = 1, col = "red", lty = 2) +
+  geom_vline(xintercept = 2, col = "red", lty = 2) +
+  # scale_y_log10() +
+  scale_x_continuous(breaks = 0:12) +
+  labs(
+    title = "Spectral analysis of the total points per hour",
+    x = "Frequency (oscillations per day)",
+    y = "log Spectral density"
+  ) +
+  my_theme
+```
+
+```{r}
+evidence_freq_1 <- readRDS("evidence/evidence_freq_1.RDS")
+evidence_freq_2 <- readRDS("evidence/evidence_freq_2.RDS")
+evidence_freq_3 <- readRDS("evidence/evidence_freq_3.RDS")
+```
+
+```{r}
+bf_table_df <-  data.frame(Model = "$\\mathcal {M}_1$",  BF = bayes_factor(evidence_freq_1, evidence_freq_2, log = TRUE)$bf %>% round(digits = 2)) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_2$",  BF = bayes_factor(evidence_freq_2, evidence_freq_2, log = TRUE)$bf %>% round(digits = 2))
+  ) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_3$",  BF = bayes_factor(evidence_freq_3, evidence_freq_2, log = TRUE)$bf %>% round(digits = 2))
+  ) %>% 
+  mutate("$\\ln \\mathcal{BF}_{l 2}$" = BF) %>% 
+  select(-BF)
+```
+
+```{r freq_evidence_estimate, results='asis'}
+bf_table_df %>% 
+  extract(, 2) %>% 
+  t() %>% 
+  set_colnames(
+    c("$\\mathcal {M}_1$","$\\mathcal {M}_2$", "$\\mathcal {M}_3$")
+  ) %>% 
+  set_rownames("$\\ln \\mathcal{BF}_{l2}$") %>% 
+  xtable(
+    label = "tab:freq_bf_estimates",
+    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_2$, that is, $\\ln \\mathcal{BF}_{l2}$ for $l = 1, \\dots, 3$. The evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence. This analysis presents decisive evidence to support a choice of $K > 1$.",
+    align = "|l|c|c|c|"
+  ) %>% 
+  print.xtable(
+    include.rownames = T,
+    include.colnames = T,
+    # hline.after = 0:2,
+    type = "latex", sanitize.text.function = function(x){x},
+    comment=FALSE
+    )
+```
+
+```{r}
+fit_freq_1 <- readRDS("models/fit_freq_1.RDS")
+fit_freq_2 <- readRDS("models/fit_freq_2.RDS")
+fit_freq_3 <- readRDS("models/fit_freq_3.RDS")
+```
+
+```{r freq_activity_functions, fig.width=6, fig.height=3}
+t <- seq(0, 24, length.out = 101)
+omega <- 2 * pi * (1:5) / 24
+fit_freq_1 %>% 
+  as.data.frame() %>% 
+  select(starts_with("alpha")) %>% 
+  apply(1, function(x) 1 + sinusoidal_function(
+    t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1]
+  )) %>% 
+  data.frame(K = 1, t, .) %>%
+  rbind(
+    fit_freq_2 %>% 
+      as.data.frame() %>% 
+      select(starts_with("alpha")) %>% 
+      apply(1, function(x) 1 + sinusoidal_function(
+        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:2]
+      )) %>% 
+      data.frame(K = 2, t, .)
+  ) %>% 
+   rbind(
+    fit_freq_3 %>% 
+      as.data.frame() %>% 
+      select(starts_with("alpha")) %>% 
+      apply(1, function(x) 1 + sinusoidal_function(
+        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:3]
+      )) %>% 
+      data.frame(K = 3, t, .)
+  ) %>% 
+  melt(id.vars = c("K", "t")) %>% 
+  mutate(K = as.factor(K)) %>% 
+  group_by(K, t) %>%
+  summarise(
+    average = mean(value), 
+    ci.low = hdi(value)[1],
+    ci.up = hdi(value)[2]
+    ) %>% 
+  ungroup(K) %>% 
+  ggplot() +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_ribbon(aes(x = t, ymin = ci.low, ymax = ci.up, fill = K), alpha = 0.1) +
+  geom_line(aes(x = t, y = average, color = K)) +
+  scale_fill_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'))) +
+  scale_color_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'))) +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 6)) +
+  my_theme +
+  labs(
+    title = "Absolute-time component of the offspring intensity",
+    x = "Time (hours)",
+    y  = TeX("$\\alpha (t)$"),
+    color = NULL,
+    fill = NULL
+  )
+```
