@@ -8,10 +8,6 @@ output:
     fig_crop: false
 ---
 
-# Preliminaries
-
-Load required packages
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 
@@ -31,7 +27,6 @@ library(zoo)
 library(ggpubr)
 ```
 
-
 ```{r plot_settings}
 # Set a general theme for ggplot to ensure consistency
 my_theme <- theme_classic() +
@@ -48,51 +43,16 @@ my_theme <- theme_classic() +
 
 ## Exploratory analysis
 
-```{r activity_levels}
-# First we explore the circadian rhythm of activity on the sub-reddit.
-# messageboard_df is the full dataset of discussions on the r/ireland subreddit
-mean_nodes <- nrow(messageboard_df) / (42 * 24) # Overall mean nodes per hour
-n_buckets <- 5 # number of discrete buckets per hour
-window <- 3 # number of hours in moving average
+This section of the manuscript includes three figures exploring various aspects of the `r/ireland` dataset.
 
-gg_activity <- messageboard_df %>% 
-  # filter(parent_id == 0) %>% # include this line if only interested in posts
-  # separate out element of the timestap for the node
-  mutate(moy = month(time)) %>% 
-  mutate(dow = wday(time, week_start = 1)) %>% 
-  mutate(dow = factor(dow)) %>% 
-  mutate(dom = day(time)) %>% 
-  mutate(hod = hour(time)) %>% 
-  mutate(moh = minute(time)) %>% 
-  # compute the number of nodes in each time bucket
-  mutate(bucket = sapply(moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1)))) %>% 
-  group_by(moy, dow, dom, hod, bucket) %>% 
-  summarise(count = max(0, length(id))) %>% 
-  ungroup() %>% 
-  # get midpoint time associated with each bucket
-  mutate(t = hod + (bucket - 0.5) / n_buckets) %>% 
-  mutate(date = paste0(dom, "-", moy)) %>% 
-  # get a rolling average
-  mutate(ma_count = n_buckets * rollmean(count, window * n_buckets, na.pad = TRUE)) %>% 
-  ggplot() +
-  geom_line(aes(x = t, y = ma_count, group = date, col = dow), alpha = 0.5) +
-  # geom_hline(yintercept = mean_nodes, lty = 2) + # include this line to see overall mean
-  my_theme +
-  theme(legend.position = "none") +
-  scale_color_viridis_d() +
-  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
-  labs(
-    title = TeX("Daily activity levels on r/ireland"),
-    subtitle = paste0(window, "-hour moving average"),
-    x = "Hour of the day (IST)",
-    y = "Nodes per hour"
-  )
-```
+### Figure 1
 
+This figure highlights the branching structure associated with a typical sequence of discussions and the circadian rhythm associated with overall activity on the subreddit.
 
-```{r data_snapshot}
+```{r data_snapshot_plot}
 # Plot illustrating the data structure
 # select an interval to examine
+# this interval was cherry picked
 lower <- ymd_hms(20190415160000)
 upper <- lower + minutes(30)
 # identify the discussions in the interval
@@ -103,14 +63,23 @@ discussions <- messageboard_df %>%
 # pull out and prepare the subset of discussions
 subset <- messageboard_df %>% 
   filter(discussion %in% discussions) %>% 
-  mutate(parent_id = refactor_branching_structure(
+  mutate(
+    parent_id = refactor_branching_structure(
     id = id,
     parent_id = parent_id,
     is_immigrant = (parent_id == 0),
     S = 20
   )) %>% 
   mutate(id = 1:nrow(.)) %>% 
-  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>% 
+  mutate(
+    t = as.numeric(
+      difftime(
+        time, 
+        dmy_hms(010419000000, tz = "Europe/London"), 
+        units = "hours"
+        )
+      )
+    ) %>% 
   mutate(t = t - min(t)) %>%
   group_by(discussion) %>% 
   mutate(tau = t - min(t)) %>% 
@@ -127,9 +96,15 @@ for (i in 1:nrow(subset)) {
   }
 }
 subset <- subset %>% 
-  mutate(generation = generation) %>% 
-  mutate(generation = factor(generation, ordered = TRUE)) %>% 
-  mutate(n_offspring = tabulate(parent_id + 1, nbins = nrow(.) + 1)[-1])
+  mutate(
+    generation = generation
+    ) %>% 
+  mutate(
+    generation = factor(generation, ordered = TRUE)
+    ) %>% 
+  mutate(
+    n_offspring = tabulate(parent_id + 1, nbins = nrow(.) + 1)[-1]
+    )
 # set the origin for each edge in the branching structure
 # then set a perturbation of the child nodes along the x-axis
 # needed to plot the branching structure clearly
@@ -142,11 +117,23 @@ for (i in 1:nrow(subset)) {
   if (subset$parent_id[i] != 0) {
     off_ind[new_v[i]] <- off_ind[new_v[i]]  + 1
     if (subset$generation[i] == 1) {
-      perturb[i] <- seq(-per_range, per_range, length.out = subset$n_offspring[new_v[i]] + 2) [off_ind[new_v[i]] + 1]
+      perturb[i] <- seq(
+        -per_range, 
+        per_range, 
+        length.out = subset$n_offspring[new_v[i]] + 2
+        ) [off_ind[new_v[i]] + 1]
     } else {
-      perturb[i] <- perturb[new_v[i]] + seq(-per_range, per_range, length.out = subset$n_offspring[new_v[i]] + 2) [off_ind[new_v[i]] + 1]
+      perturb[i] <- perturb[new_v[i]] + 
+        seq(
+          -per_range, 
+          per_range, 
+          length.out = subset$n_offspring[new_v[i]] + 2
+          )[off_ind[new_v[i]] + 1]
     }
-    source_x[i] <- (subset$time - (seconds((subset$tau + perturb) * 60 * 60)))[new_v[i]]
+    source_x[i] <- (
+      subset$time - 
+        (seconds((subset$tau + perturb) * 60 * 60))
+      )[new_v[i]]
     source_y[i] <- subset$tau[new_v[i]]
   } else {
     source_x[i] <- subset$time[i]
@@ -155,29 +142,33 @@ for (i in 1:nrow(subset)) {
 }
 # convert x axis to clock time
 subset$perturb <- perturb
-subset$source_x <- as.POSIXct(source_x, origin="1970-01-01", tz = "Europe/London")
+subset$source_x <- as.POSIXct(
+  source_x, 
+  origin="1970-01-01", 
+  tz = "Europe/London"
+  )
 subset$source_y <- source_y
 # make plot
 gg_snapshot <- ggplot(subset) +
   geom_segment(
     aes(
-      x = time - seconds((tau + perturb) * 60 * 60), y = tau + 1,
-      xend = source_x, yend = source_y + 1
+      x = time - seconds((tau + perturb) * 60 * 60), 
+      y = tau + 1,
+      xend = source_x, 
+      yend = source_y + 1
     )
   ) +
   geom_point(
-    aes(x = time - seconds((tau + perturb) * 60 * 60), y = tau + 1, color = generation),
+    aes(
+      x = time - seconds((tau + perturb) * 60 * 60), 
+      y = tau + 1, color = generation),
   ) +
-  # coord_cartesian(
-  #   xlim = c(0, 0.5)
-  # ) +
   my_theme +
   theme(
     legend.position = "none"
   ) +
   scale_y_log10(breaks = 2^(0:5), labels = 2^(0:5) - 1) +
   scale_color_viridis_d() +
-  # ylim(0, 30) +
   labs(
     title = "The structure of discussion trees on r/ireland",
     x = "Monday, April 15, 2019",
@@ -186,22 +177,91 @@ gg_snapshot <- ggplot(subset) +
   )
 ```
 
-Plot the moving average for replies throughout the day
+```{r activity_levels_plot}
+# First we explore the circadian rhythm of activity on the sub-reddit.
+# messageboard_df is the full dataset of discussions on the r/ireland subreddit
+n_buckets <- 5 # number of discrete buckets per hour
+window <- 3 # number of hours in moving average
 
-```{r mean_replies}
-n_buckets <- 5
-window <- 3
-
-gg_mean_replies <- messageboard_df %>% 
-  mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+gg_activity <- messageboard_df %>% 
+  # filter(parent_id == 0) %>% # include this line if only interested in posts
+  # separate out elements of the timestamp for each point
   mutate(moy = month(time)) %>% 
   mutate(dow = wday(time, week_start = 1)) %>% 
   mutate(dow = factor(dow)) %>% 
   mutate(dom = day(time)) %>% 
   mutate(hod = hour(time)) %>% 
   mutate(moh = minute(time)) %>% 
-  mutate(bucket = sapply(moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1)))) %>% 
-  filter(parent_id == 0) %>%
+  # compute the number of nodes in each time bucket
+  mutate(
+    bucket = sapply(
+      moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1)))
+    ) %>% 
+  group_by(moy, dow, dom, hod, bucket) %>% 
+  summarise(count = max(0, length(id))) %>% 
+  ungroup() %>% 
+  # get midpoint time associated with each bucket
+  mutate(
+    t = hod + (bucket - 0.5) / n_buckets
+    ) %>% 
+  mutate(date = paste0(dom, "-", moy)) %>% 
+  # get a rolling average
+  mutate(ma_count = n_buckets * rollmean(count, window * n_buckets, na.pad = TRUE)) %>% 
+  ggplot() +
+  geom_line(
+    aes(x = t, y = ma_count, group = date, col = dow), 
+    alpha = 0.5
+    ) +
+  my_theme +
+  theme(legend.position = "none") +
+  scale_color_viridis_d() +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = TeX("Daily activity levels on r/ireland"),
+    subtitle = paste0(window, "-hour moving average"),
+    x = "Hour of the day (IST)",
+    y = "Nodes per hour"
+  )
+```
+
+```{r data_exploration, fig.height=4, fig.width=6}
+ggarrange(
+  gg_snapshot,
+  gg_activity,
+  labels = "auto",
+  nrow = 2
+)
+```
+
+### Figure 2
+
+This figure highlights that the mean number of replies to each point within the subreddit seems to follow a circadian rhythm and that the distribution of the number of replies to each point is overdispersed relative to the Poisson distribution.
+
+```{r mean_replies}
+n_buckets <- 5 # buckets per hour
+window <- 3
+
+gg_mean_replies <- messageboard_df %>% 
+  # number of replies
+  mutate( 
+    z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]
+    ) %>% 
+  # separate out elements of the timestamp for each point
+  mutate(moy = month(time)) %>% 
+  mutate(dow = wday(time, week_start = 1)) %>% 
+  mutate(dow = factor(dow)) %>% 
+  mutate(dom = day(time)) %>% 
+  mutate(hod = hour(time)) %>% 
+  mutate(moh = minute(time)) %>% 
+  # identify the bucket within each hour
+  mutate(
+    bucket = sapply(
+      moh, 
+      function(x) sum(x >= seq(0, 60, length.out = n_buckets  + 1))
+      )
+    ) %>%  
+  # first consider mean replies to posts only
+  filter(parent_id == 0) %>% 
   group_by(moy, dow, dom, hod, bucket) %>% 
   summarise(replies = mean(z)) %>% 
   ungroup() %>% 
@@ -212,6 +272,7 @@ gg_mean_replies <- messageboard_df %>%
   summarise(mean_replies = mean(ma_replies, na.rm = T)) %>% 
   cbind(type = "post") %>% 
   rbind(
+    # repeat the above analysis for comments
     messageboard_df %>% 
       mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
       mutate(moy = month(time)) %>% 
@@ -233,7 +294,12 @@ gg_mean_replies <- messageboard_df %>%
       cbind(type = "comment")
   ) %>% 
   ggplot() +
-  geom_line(aes(x = t, y = mean_replies, color = type)) +
+  geom_line(
+    aes(
+      x = t, 
+      y = mean_replies, 
+      color = type)
+    ) +
   my_theme +
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
@@ -245,10 +311,7 @@ gg_mean_replies <- messageboard_df %>%
     y = "Number of replies",
     color = NULL
   )
-  
 ```
-
-Plot the distribution for the number of replies
 
 ```{r reply_distribution}
 R <- messageboard_df %>% 
@@ -257,17 +320,26 @@ R <- messageboard_df %>%
   mean
   
 gg_reply_distribution <- left_join(
+  # analysis of posts
   messageboard_df %>% 
-    mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+    # number of replies to each point
+    mutate(
+      z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]
+      ) %>% 
     filter(parent_id == 0) %>% 
     use_series(z) %>% 
+    # frequency for each number of replies
     tabulate() %>% 
+    # convert to probability
     divide_by(sum(.)) %>% 
     data.frame(Posts = .) %>% 
     mutate(n = -1 + 1:nrow(.)) %>% 
     filter(Posts != 0),
+  # analysis of comments
   messageboard_df %>% 
-    mutate(z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]) %>% 
+    mutate(
+      z = tabulate(parent_id+1, nbins = nrow(.)+1)[-1]
+      ) %>% 
     filter(parent_id != 0) %>% 
     use_series(z) %>% 
     tabulate() %>% 
@@ -280,9 +352,16 @@ gg_reply_distribution <- left_join(
   ggplot() +
   geom_line(
     data = data.frame(x = 0:9, y = dpois(0:9, lambda = R)),
-    aes(x = x, y = y), lty = 2
+    aes(x = x, y = y), 
+    lty = 2
   ) +
-  geom_point(aes(x = n, y = value, color = variable)) +
+  geom_point(
+    aes(
+      x = n, 
+      y = value, 
+      color = variable
+      )
+    ) +
   scale_color_viridis_d() +
   scale_fill_viridis_d() +
   scale_y_log10() +
@@ -298,31 +377,61 @@ gg_reply_distribution <- left_join(
   )
 ```
 
-Plot the generation interval distributions at different times of day
+```{r reply_distribution_exploration, fig.height=3, fig.width=6}
+ggarrange(
+  gg_mean_replies, gg_reply_distribution,
+  nrow = 1, labels = 'auto',
+  common.legend = TRUE, legend = 'bottom'
+)
+```
+
+### Figure 3
+
+The final figure in this section illustrates that the distribution of generation intervals depends on the time of day that a point arrives.
 
 ```{r first_reply_interval}
 gg_reply_interval_0_2 <- messageboard_df %>% 
-  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>% 
-  mutate(parent_t = sapply(parent_id, function(i){
-    if (i == 0) {
-      out <- NA
-    } else {
-      out <- t[i]
-    }
-    out
-  })) %>% 
-  mutate(type = sapply(parent_id, function(i){
-    if (i == 0) {
-      out <- NA
-    } else {
-      if (parent_id[i] == 0) {
-        out <- "post"
-      } else {
-        out <- "comment"
-      }
-    }
-    out
-  })) %>% 
+  # convert timestamps to hours since time 0 (April 1)
+  mutate(
+    t = as.numeric(
+      difftime(
+        time, 
+        dmy_hms(010419000000, tz = "Europe/London"), units = "hours")
+      )
+    ) %>% 
+  # t for parent node 
+  mutate(
+    parent_t = sapply(
+      parent_id, 
+      function(i){
+        if (i == 0) {
+          out <- NA
+        } else {
+          out <- t[i]
+        }
+        out
+        }
+      )
+    ) %>% 
+  # parent node type
+  mutate(
+    type = sapply(
+      parent_id, 
+      function(i){
+        if (i == 0) {
+          out <- NA
+        } else {
+          if (parent_id[i] == 0) {
+            out <- "post"
+          } else {
+            out <- "comment"
+          }
+        }
+        out
+        }
+      )
+    ) %>% 
+  # generation interval
   mutate(tau = t - parent_t) %>% 
   mutate(parent_tod = mod(parent_t, 24)) %>% 
   mutate(parent_tod = floor(parent_tod)) %>% 
@@ -330,9 +439,16 @@ gg_reply_interval_0_2 <- messageboard_df %>%
   filter(tau < 24) %>% 
   ggplot() +
   geom_histogram(
-    aes(x = tau, y = ..density.., fill = type),
-    alpha = 0.5, position = "identity",
-    binwidth = 0.5, boundary = 0) +
+    aes(
+      x = tau, 
+      y = ..density.., 
+      fill = type
+      ),
+    alpha = 0.5, 
+    position = "identity",
+    binwidth = 0.5, 
+    boundary = 0
+    ) +
   scale_fill_viridis_d() +
   scale_color_viridis_d() +
   my_theme +
@@ -350,38 +466,58 @@ gg_reply_interval_0_2 <- messageboard_df %>%
 
 ```{r second_reply_interval}
 gg_reply_interval_12_14 <- messageboard_df %>% 
-  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>% 
-  mutate(parent_t = sapply(parent_id, function(i){
-    if (i == 0) {
-      out <- NA
-    } else {
-      out <- t[i]
-    }
-    out
-  })) %>% 
-  mutate(type = sapply(parent_id, function(i){
-    if (i == 0) {
-      out <- NA
-    } else {
-      if (parent_id[i] == 0) {
-        out <- "post"
+  mutate(
+    t = as.numeric(
+      difftime(
+        time, 
+        dmy_hms(010419000000, tz = "Europe/London"), units = "hours")
+      )
+    ) %>% 
+  mutate(parent_t = sapply(
+    parent_id, 
+    function(i){
+      if (i == 0) {
+        out <- NA
       } else {
-        out <- "comment"
+        out <- t[i]
       }
-    }
-    out
-  })) %>% 
+      out
+      }
+    )
+    ) %>% 
+  mutate(
+    type = sapply(
+      parent_id, 
+      function(i){
+        if (i == 0) {
+          out <- NA
+        } else {
+          if (parent_id[i] == 0) {
+            out <- "post"
+          } else {
+            out <- "comment"
+          }
+        }
+        out
+        }
+      )
+    ) %>% 
   mutate(tau = t - parent_t) %>% 
   mutate(parent_tod = mod(parent_t, 24)) %>% 
   mutate(parent_tod = floor(parent_tod)) %>% 
-  # filter(parent_tod %in% c(0, 6, 12, 18)) %>%
   filter(parent_tod > 12 & parent_tod < 14) %>%
   filter(tau < 24) %>% 
   ggplot() +
   geom_histogram(
-    aes(x = tau, y = ..density.., fill = type),
-    alpha = 0.5, position = "identity",
-    binwidth = 0.5, boundary = 0) +
+    aes(
+      x = tau, 
+      y = ..density.., 
+      fill = type
+      ),
+    alpha = 0.5, 
+    position = "identity",
+    binwidth = 0.5, 
+    boundary = 0) +
   scale_fill_viridis_d() +
   scale_color_viridis_d() +
   my_theme +
@@ -395,25 +531,6 @@ gg_reply_interval_12_14 <- messageboard_df %>%
     fill = NULL,
     color = NULL
   )
-```
-
-Produce plots for the manuscript
-
-```{r data_exploration, fig.height=4, fig.width=6}
-ggarrange(
-  gg_snapshot,
-  gg_activity,
-  labels = "auto",
-  nrow = 2
-)
-```
-
-```{r reply_distribution_exploration, fig.height=3, fig.width=6}
-ggarrange(
-  gg_mean_replies, gg_reply_distribution,
-  nrow = 1, labels = 'auto',
-  common.legend = TRUE, legend = 'bottom'
-)
 ```
 
 ```{r reply_interval_exploration, fig.height=3, fig.width=6}

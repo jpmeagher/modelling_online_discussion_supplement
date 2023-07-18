@@ -2,7 +2,7 @@ The code in this folder allows you to reproduce the results presented in
   "Modelling online discussion under circadian rhythms and superspreading 
   dynamics" by Joe Meagher and Nial Friel.
 
-Running each of the R scripts in the /scripts folder will populate the /models, 
+Running each of the R scripts in the /scripts folder will populate /models, 
   /evidence and /predictions folders with the required .RDS objects. The code 
   calls the [onlineMessageboardActivity](https://github.com/jpmeagher/onlineMessageboardActivity)
   package which accompanies the paper.
