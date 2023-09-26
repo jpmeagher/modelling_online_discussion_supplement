@@ -11,8 +11,10 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 
-# Load required packages
+# devtools::install_github("jpmeagher/assessEpidemicCurves")
 # devtools::install_github("jpmeagher/onlineMessageboardActivity")
+
+# Load required packages
 library(onlineMessageboardActivity)
 library(dplyr)
 library(ggplot2)
@@ -37,6 +39,60 @@ my_theme <- theme_classic() +
     plot.subtitle = element_text(size = 10),
     legend.text = element_text(size = 7)
   )
+```
+
+```{r helper_functions}
+# helper functions used when creating tables
+mean_sd <- function (x, digits = 2) 
+{
+    n <- sum(!is.na(x))
+    if(n == 0) return("-")
+    m <- round(mean(x), digits = digits)
+    s <- round(stats::sd(x), digits = digits)
+    paste(m, " (", s, ")", sep = "")
+}
+
+mean_se <- function (x, digits = 2)
+{
+  n <- sum(!is.na(x))
+  if (n == 0)
+    return("-")
+  m <- mean(x)
+  s <- (sd(x) / sqrt(n))
+  paste0(sprintf(m, fmt = paste0('%#.', digits, 'f')),
+        " (",
+        sprintf(s, fmt = paste0('%#.', digits, 'f')),
+        ")"
+        )
+}
+
+mean_ci <- function (
+    x, alpha = 0.05, digits = 2
+    ) 
+{
+  if(all(is.na(x))) return("-")
+  m <- round(mean(x), digits = digits)
+  quants <- round(quantile(x, prob = c(alpha / 2, 1 - alpha / 2)), digits = digits)
+  paste(m, " (", quants[1], ", ", quants[2], ")", sep = "")
+}
+
+sum_se <- function (x, digits = 2)
+{
+  n <- sum(!is.na(x))
+  if (n == 0)
+    return("-")
+  m <- sum(x)
+  s <- stats::sd(x) * sqrt(n)
+  paste0(sprintf(m, fmt = paste0('%#.', digits, 'f')),
+        " (",
+        sprintf(s, fmt = paste0('%#.', digits, 'f')),
+        ")"
+        )
+}
+
+se <- function(x){
+  sd(x) / sqrt(length(x))
+}
 ```
 
 # Background
@@ -545,16 +601,21 @@ ggarrange(
 
 # Methods
 
-## Generative model
+This section of the manuscript presents all the methods required to conduct the reported analysis.
 
-Simulate a cluster
+## The generative model
 
-```{r}
+### Figure 4
+
+This figure presents a synthetic cluster, highlighting relevant features of the model. The figure consists of 4 elements.  
+
+```{r simulate_cluster}
+# set hyperparameters
 day <- 24
 f <- 1 / c(day, day / 2)
 omega <- 2 * pi * f
 alpha <- c(-0.34, -0.47, -0.18, 0.34)
-
+# simulate a cluster
 set.seed(108)
 simulated_cluster <- simulate_gpm_cluster_process(
   t_seed = 0, branching_structure_seed = 0,
@@ -570,27 +631,41 @@ simulated_cluster <- simulate_gpm_cluster_process(
 )
 ```
 
-```{r}
+```{r aesthetic_adjustment}
 # minor ajustment of one point to improve the aesthetic of figure
 simulated_cluster$t[7] <- simulated_cluster$t[7] + 1.5
 ```
 
-plot the simulated cluster illustrating the individual reproduction numbers and the branching structure
+First we present the simulated cluster illustrating individual reproduction numbers and the branching structure.
 
-```{r}
+```{r simulated_cluster_plot}
 gg_sim_clust <- simulated_cluster %>% 
+  # distinguish between post and comments
   mutate(type = parent_id == 0) %>% 
   mutate(type = ifelse(type, "post", "comment")) %>% 
-  mutate(y_pos = c(
-    -0.025, -0.025, -0.15, -0.1, -0.05, 
-    0, 0.01, -0.15, -0.075, 0.05, 
-    -0.09, -0.025, 0.1, 0.025, 0.025,
-    -0.025, 0.175, 0.075, 0.18)) %>% 
+  # manually set positions on the y-axis for each node
+  mutate(y_pos = 
+           c(
+             -0.025, -0.025, -0.15, -0.1, -0.05, 
+             0, 0.01, -0.15, -0.075, 0.05, 
+             -0.09, -0.025, 0.1, 0.025, 0.025,
+             -0.025, 0.175, 0.075, 0.18
+             )
+         ) %>% 
+  # specify end points for branching structure line segments
   mutate(xend = c(NA, t[parent_id])) %>% 
   mutate(yend = c(NA, y_pos[parent_id])) %>% 
   ggplot() +
-  geom_segment(aes(x = t, y = y_pos, xend = xend, yend = yend)) +
-  geom_point(aes(x = t, y = y_pos, size = nu, color = type)) +
+  geom_segment(
+    aes(
+      x = t, y = y_pos, xend = xend, yend = yend
+      )
+    ) +
+  geom_point(
+    aes(
+      x = t, y = y_pos, size = nu, color = type
+      )
+    ) +
   my_theme +
   theme(
     legend.position = "none",
@@ -606,10 +681,12 @@ gg_sim_clust <- simulated_cluster %>%
     )
 ```
 
-plot the activity function modelling the circadian rhythm
+The second element is the circadian rhythm modulating the overall activity intensity. 
 
-```{r}
-gg_activity <- data.frame(t = seq(0, 48, length.out = 1001)) %>% 
+```{r ciradian_rhythm_plot}
+gg_activity <- data.frame(
+  t = seq(0, 48, length.out = 1001)
+  ) %>% 
   mutate(alpha = 1 + sinusoidal_function(t, alpha, omega)) %>% 
   ggplot() +
   geom_line(aes(x =t , y = alpha)) +
@@ -622,11 +699,16 @@ gg_activity <- data.frame(t = seq(0, 48, length.out = 1001)) %>%
   )
 ```
 
-plot the excitation function associated with each node
+The third element is the excitation induces by each new point given it's individual reproduction number and the exponential excitation function.
 
-```{r}
+```{r excitation_function_plot}
 gg_excitation <- data.frame(t = seq(0, 48, length.out = 1001)) %>% 
-  mutate(excitation = sapply(t, function(x) sum(dexp(x - simulated_cluster$t, rate = c(0.1, rep(0.25, 18)))))) %>% 
+  mutate(
+    excitation = sapply(
+      t, 
+      function(x) sum(dexp(x - simulated_cluster$t, rate = c(0.1, rep(0.25, 18))))
+      )
+    ) %>% 
   ggplot() +
   geom_line(aes(x = t , y = excitation)) +
   my_theme +
@@ -638,12 +720,24 @@ gg_excitation <- data.frame(t = seq(0, 48, length.out = 1001)) %>%
   )
 ```
 
-plot the condititional intensity for the simulated cluster
+The fourth and final element is the conditional intensity function associated with the cluster.
 
-```{r}
-gg_intensity <- data.frame(t = seq(0, 48, length.out = 1001)) %>% 
-  mutate(alpha = 1 + sinusoidal_function(t, alpha, omega)) %>% 
-  mutate(excitation = sapply(t, function(x) sum(simulated_cluster$nu * dexp(x - simulated_cluster$t, rate = c(0.1, rep(0.25, 18)))))) %>% 
+```{r conditional_intensity_plot}
+gg_intensity <- data.frame(
+  t = seq(0, 48, length.out = 1001)
+  ) %>% 
+  # activity
+  mutate(
+    alpha = 1 + sinusoidal_function(t, alpha, omega)
+    ) %>%
+  # excitation
+  mutate(
+    excitation = sapply(
+      t, 
+      function(x) sum(simulated_cluster$nu * dexp(x - simulated_cluster$t, rate = c(0.1, rep(0.25, 18))))
+      )
+    ) %>% 
+  # intensity
   mutate(intensity = alpha * excitation) %>% 
   ggplot() +
   geom_line(aes(x = t , y = intensity)) +
@@ -656,8 +750,6 @@ gg_intensity <- data.frame(t = seq(0, 48, length.out = 1001)) %>%
   )
 ```
 
-create the plot for the manuscript
-
 ```{r model_form, fig.height=6, fig.width=6}
 ggarrange(
   gg_sim_clust, gg_activity, gg_excitation, gg_intensity,
@@ -665,76 +757,20 @@ ggarrange(
 )
 ```
 
-
 # Results
 
-some helper functions for the tables
-
-```{r helper_functions}
-mean_sd <- function (x, digits = 2) 
-{
-    n <- sum(!is.na(x))
-    if(n == 0) return("-")
-    m <- round(mean(x), digits = digits)
-    s <- round(stats::sd(x), digits = digits)
-    paste(m, " (", s, ")", sep = "")
-}
-
-mean_se <- function (x, digits = 2)
-{
-  n <- sum(!is.na(x))
-  if (n == 0)
-    return("-")
-  m <- mean(x)
-  s <- (sd(x) / sqrt(n))
-  paste0(sprintf(m, fmt = paste0('%#.', digits, 'f')),
-        " (",
-        sprintf(s, fmt = paste0('%#.', digits, 'f')),
-        ")"
-        )
-}
-
-mean_ci <- function (
-    x, alpha = 0.05, digits = 2
-    ) 
-{
-  if(all(is.na(x))) return("-")
-  m <- round(mean(x), digits = digits)
-  quants <- round(quantile(x, prob = c(alpha / 2, 1 - alpha / 2)), digits = digits)
-  paste(m, " (", quants[1], ", ", quants[2], ")", sep = "")
-}
-
-sum_se <- function (x, digits = 2)
-{
-  n <- sum(!is.na(x))
-  if (n == 0)
-    return("-")
-  m <- sum(x)
-  s <- stats::sd(x) * sqrt(n)
-  paste0(sprintf(m, fmt = paste0('%#.', digits, 'f')),
-        " (",
-        sprintf(s, fmt = paste0('%#.', digits, 'f')),
-        ")"
-        )
-}
-
-se <- function(x){
-  sd(x) / sqrt(length(x))
-}
-```
-
-specify hyperparameters for the model
+This section of the manuscript presents the results of our analysis as a series of tables and figures.
 
 ```{r hyperparameters}
+# specify hyperparameters for the sinusoidal basis
 K <- 2
 omega <- 2 * pi * (1:K) / 24
 ```
 
 ## Inference
 
-load the fitted models
-
 ```{r fitted_models}
+# load the fitted models
 fit_M1 <- readRDS("models/fit_M1.RDS")
 fit_M2 <- readRDS("models/fit_M2.RDS")
 fit_M3 <- readRDS("models/fit_M3.RDS")
@@ -742,9 +778,8 @@ fit_M4 <- readRDS("models/fit_M4.RDS")
 fit_M5 <- readRDS("models/fit_M5.RDS")
 ```
 
-load the evidence estimates
-
 ```{r evidence}
+# load the evidence estimates
 evidence_M1 <- readRDS("evidence/evidence_M1.RDS")
 evidence_M2 <- readRDS("evidence/evidence_M2.RDS")
 evidence_M3 <- readRDS("evidence/evidence_M3.RDS")
@@ -752,9 +787,11 @@ evidence_M4 <- readRDS("evidence/evidence_M4.RDS")
 evidence_M5 <- readRDS("evidence/evidence_M5.RDS")
 ```
 
-create table presenting parameter summary
+### Table 2
 
-```{r}
+This table summarises posterior distributions for each parameter of the model relating to offspring processes.
+
+```{r offspring_process_parameter_table_df}
 parameter_table_df <- fit_M1 %>% 
   as.data.frame() %>% 
   select("$\\mu_1$" = `mu[1]`, "$\\eta_1$" = `eta[1]`) %>%
@@ -793,13 +830,12 @@ parameter_table_df <- fit_M1 %>%
   summarize(across(c("$\\mu_1$", "$\\mu_2$", "$\\eta_1$", "$\\eta_2$", "$\\psi_1$", "$\\psi_2$"), mean_sd, digits = 2))
 ```
 
-copy and paste the output for this code into the manuscript
-
-```{r parameter_table, results='asis'}
+```{r offspring_process_parameter_table, results='asis'}
+# copy and paste the output from this code chunk into the manuscript
 parameter_table_df %>% 
   xtable(
     label = "tab:parameter_estimates",
-    caption = "Posterior mean (standard deviation) for the parameters $\\boldsymbol \\eta$, $\\boldsymbol \\mu$, and $\\boldsymbol \\psi$ within each of our candidate models. Considering each of the parameters in turn, the broad agreement on $\\boldsymbol \\mu$ across all the candidate models suggests that the expected number of offspring does not differ between immigrants and offspring. Differences in the offspring distributions for immigrants and offspring are manifest in the memory decay rate, which indicates that the expected generation interval for immigrants is longer than that for offspring. Finally, the values for $\\boldsymbol \\psi$ inferred by $\\mathcal M_4$ suggest that immigrant points have a moderately heterogeneous offspring process while the offspring process for offspring is relatively homogeneous. As such, we include $\\mathcal M_5$ in our analysis, which assumes heterogeneous immigrant and homogeneous offspring offspring processes, respectively.",
+    caption = "Posterior mean (standard deviation) for the parameters $\\boldsymbol \\eta$, $\\boldsymbol \\mu$, and $\\boldsymbol \\psi$ within each of our candidate models. Considering each of the parameters in turn, the broad agreement on $\\boldsymbol \\mu$ across all the candidate models suggests that the expected number of offspring does not differ between immigrants and offspring. Differences in the offspring distributions for immigrants and offspring are manifest in the memory decay rate, which indicates that the expected generation interval for immigrants is longer than that for offspring. Finally, the values for $\\boldsymbol \\psi$ inferred by $\\mathcal M_4$ suggest that immigrant points have a moderately heterogeneous offspring process while the offspring process for offspring is relatively homogeneous. As such, we include $\\mathcal M_5$ in our analysis, which assumes heterogeneous immigrant and homogeneous offspring processes, respectively.",
     align = "|l|c|c|c|c|c|c|c|"
   ) %>% 
   print.xtable(
@@ -809,93 +845,102 @@ parameter_table_df %>%
     )
 ```
 
-some calculations to be included in the manuscript
+We include calculations to support assertions on the posterior distributions for each parameter included in the text.
 
-```{r posterior_exploration, eval = FALSE}
-par <- "psi"
-
+```{r posterior_exploration}
+# 95% ci for relevant parameters
 fit_M4 %>% 
   as.data.frame() %>% 
-  select(starts_with(par)) %>% 
-  melt() %>% 
-  ggplot() +
-  geom_histogram(aes(x = value, y = ..density.., fill = variable), position = 'identity',alpha = 0.5)
-  
-fit_M4 %>% 
-  as.data.frame() %>% 
-  select(starts_with(par)) %>% 
-  summarise_all(quantile, probs = 0.025)
-
-fit_M4 %>% 
-  as.data.frame() %>% 
-  select(starts_with(par)) %>% 
-  summarise_all(quantile, probs = 0.5)
-
-fit_M4 %>% 
-  as.data.frame() %>% 
-  select(starts_with(par)) %>% 
-  summarise_all(quantile, probs = 0.975)
-
-fit_M4 %>% 
-  as.data.frame() %>% 
-  select(starts_with(par)) %>% 
-  apply(1, function(x) x[1] > x[2]) %>% 
-  mean()
-
-fit_M4 %>% 
-  as.data.frame() %>% 
-  select("mu[1]", "psi[1]") %>% 
-  apply(1, function(par) dnbinom(0, size = par[2], mu = par[1])) %>% 
-  quantile(probs = c(0.025, 0.975))
-
-fit_M4 %>% 
-  as.data.frame() %>% 
-  select("mu[2]", "psi[2]") %>% 
-  apply(1, function(par) dnbinom(0, size = par[2], mu = par[1])) %>% 
-  quantile(probs = c(0.025, 0.975))
+  select(starts_with("mu"), starts_with("eta"), starts_with("psi")) %>% 
+  # expected generation intervals
+  mutate(
+    `inv_eta[1]` = 1 / `eta[1]`, 
+    `inv_eta[2]` = 1 / `eta[2]`
+    ) %>% 
+  # transmission quantiles
+  mutate(
+    `tq[1]` = sapply(
+      `psi[1]`,
+      function(x){
+        assessEpidemicCurves::compute_transmission_quantile(0.2, x)
+        }
+      ),
+    `tq[2]` = sapply(
+      `psi[2]`,
+      function(x){
+        assessEpidemicCurves::compute_transmission_quantile(0.2, x)
+        }
+      )
+  ) %>% 
+  mutate(
+    `prop_zero[1]` = dnbinom(0, size = `psi[1]`, mu = `mu[1]`),
+    `prop_zero[2]` = dnbinom(0, size = `psi[2]`, mu = `mu[2]`)
+  ) %>% 
+  summarise_all(hdi, credMass = 0.95) %>% 
+  set_rownames(c("ci_lower", "ci_upper")) %>% 
+  round(digits = 2)
 ```
 
-```{r, eval = FALSE}
-assessEpidemicCurves::compute_transmission_quantile(0.5, 1)
-```
+### Figure 5
 
-plot the inferred activity function
+This table presents out posterior inference for the activity function $\alpha (t)$.
 
 ```{r alpha_inference, fig.height=3, fig.width=7}
 t <- seq(0, 24, length.out = 101)
 
 fit_M3 %>% 
   as.data.frame() %>% 
+  # pick out sinusoidal coefficients
   select(starts_with('alpha')) %>% 
-  apply(1, function(x) 1 + sinusoidal_function(
-    t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
-  )) %>% 
-  data.frame(model = 2, t, .) %>%
+  # map coefficients to activity function via sinusoidal basis
+  apply(
+    1, 
+    function(x){
+      1 +
+        sinusoidal_function(
+          t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+          )
+      }
+    ) %>% 
+  data.frame(model = 3, t, .) %>%
   rbind(
     fit_M4 %>% 
       as.data.frame() %>% 
       select(starts_with("alpha")) %>% 
-      apply(1, function(x) 1 + sinusoidal_function(
-        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
-      )) %>% 
-      data.frame(model = 3, t, .)
+      apply(
+        1, 
+        function(x){
+          1 + 
+            sinusoidal_function(
+              t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+              )
+          }
+        ) %>% 
+      data.frame(model = 4, t, .)
   ) %>% 
   rbind(
     fit_M5 %>% 
       as.data.frame() %>% 
       select(starts_with("alpha")) %>% 
-      apply(1, function(x) 1 + sinusoidal_function(
-        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
-      )) %>% 
-      data.frame(model = 4, t, .)
+      apply(
+        1, 
+        function(x){
+          1 + 
+            sinusoidal_function(
+              t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+              )
+          }
+        ) %>% 
+      data.frame(model = 5, t, .)
   ) %>% 
   melt(id.vars = c("model", "t")) %>% 
   mutate(model = as.factor(model)) %>% 
   group_by(model, t) %>%
+  # get posterior credible intervals
   summarise(
     average = mean(value), 
-    ci.low = hdi(value)[1],
-    ci.up = hdi(value)[2]
+    ci.low = hdi(value, credMass = 0.95)[1],
+    ci.up = hdi(value, credMass = 0.95)[2]
     ) %>% 
   ungroup(model) %>% 
   ggplot() +
@@ -915,9 +960,11 @@ fit_M3 %>%
   )
 ```
 
-create table of bayes factors
+### Table 3
 
-```{r}
+This table presents Bayes factors for each model, allowing us to assess the evidence for each model.
+
+```{r bayes_factor_table_df}
 bf_table_df <-  data.frame(Model = "$\\mathcal {M}_1$",  BF = bayes_factor(evidence_M1, evidence_M4, log = TRUE)$bf %>% round(digits = 2)) %>% 
   rbind(
     data.frame(Model = "$\\mathcal {M}_2$",  BF = bayes_factor(evidence_M2, evidence_M4, log = TRUE)$bf %>% round(digits = 2))
@@ -935,9 +982,8 @@ bf_table_df <-  data.frame(Model = "$\\mathcal {M}_1$",  BF = bayes_factor(evide
   select(-BF)
 ```
 
-copy and paste the output for this code into the manuscript
-
 ```{r evidence_estimate, results='asis'}
+# copy and paste the output for this code into the manuscript
 bf_table_df %>% 
   extract(, 2) %>% 
   t() %>% 
@@ -947,7 +993,7 @@ bf_table_df %>%
   set_rownames("$\\ln \\mathcal{BF}_{l4}$") %>% 
   xtable(
     label = "tab:bf_estimates",
-    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_4$, that is, $\\ln \\mathcal{BF}_{l4}$ for $l = 1, \\dots, 5$. Note that the evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence and, as a result, the corresponding Bayes factors. We find decisive evidence to support our inclusion of a circadian rhythm in the offspring intensity. In addition, we find decisive support for heterogeneous immigrant reproduction numbers and strong evidence for homogeneous offspring reproduction numbers.",
+    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_4$, that is, $\\ln \\mathcal{BF}_{l4}$ for $l = 1, \\dots, 5$. Note that the evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence and, as a result, the corresponding Bayes factors. We find decisive evidence to support our inclusion of a circadian rhythm in the offspring intensity. Furthermore, we find decisive support for the inclusion of heterogeneous immigrant and offspring reproduction numbers.",
     align = "|l|c|c|c|c|c|"
   ) %>% 
   print.xtable(
@@ -959,26 +1005,34 @@ bf_table_df %>%
     )
 ```
 
-## Predictive Performance
+We also check the Coefficient of variation associated with each model evidence.
 
-load summary of out-of-sample-predictions
+```{r check_bridgesampling_cv}
+bridgesampling::error_measures(evidence_M1)$cv
+bridgesampling::error_measures(evidence_M2)$cv
+bridgesampling::error_measures(evidence_M3)$cv
+bridgesampling::error_measures(evidence_M4)$cv
+bridgesampling::error_measures(evidence_M5)$cv
+```
+
+## Assessing Predictive Performance
+
+Here we assess the precictive performance of each model in terms of expected predictive density and continuous ranked probability score.
 
 ```{r predictions}
 prediction_summary <- readRDS('predictions/prediction_summary.RDS')
-# prediction_summary <- readRDS('predictions/train_prediction_summary.RDS')
 ```
 
-copy and paste the output for this code into the manuscript
+### Table 4
+
+This table presents the expected log predictive density for each model, allowing us to assess the predictive performance for each model.
 
 ```{r lpd_prediction_table, results='asis'}
+# copy and paste the output for this code into the manuscript
 prediction_summary %>%
   as.data.frame() %>% 
-  # mutate(week = factor(floor(t / (7 * 24)))) %>%
-  # mutate(in_sample = week == 0) %>%
   select(starts_with('elpd')) %>% 
   mutate_if(is.numeric,  function(x) x - prediction_summary$elpd_M4) %>% 
-  # group_by(in_sample) %>%
-  # filter(prediction_summary$size > 1) %>% 
   summarise_all(sum_se, digits = 1) %>% 
   set_colnames(
     c("$\\mathcal {M}_1$","$\\mathcal {M}_2$", "$\\mathcal {M}_3$", "$\\mathcal {M}_4$", "$\\mathcal {M}_5$")
@@ -986,7 +1040,7 @@ prediction_summary %>%
   set_rownames("$\\Delta \\widehat{\\operatorname{lpd}}_{l4}$") %>% 
   xtable(
     label = "tab:lpd",
-    caption = "The difference (standard error) in log cluster-wise predictive density on $\\boldsymbol y_{\\operatorname{test}}$ between each model and $\\mathcal M_4$. We find that $\\mathcal M_4$ and $\\mathcal M_5$ offer the best predictive performance and are effectively indistinguishable in terms of $\\operatorname{lpd}$. This provides decisive support for the inclusion of a circadian rhythm and heterogeneous immigrant reproduction numbers in our model for online discussion on the \\texttt{r/ireland} subreddit.",
+    caption = "The difference (standard error) in log cluster-wise predictive density on $\\boldsymbol y_{\\operatorname{test}}$ between each model and $\\mathcal M_4$. We find that $\\mathcal M_4$ and $\\mathcal M_5$ offer the best out-of-sample predictive performance in terms of $\\operatorname{lpd}$, with $\\mathcal M_5$ outperforming $\\mathcal M_4$ slightly. This provides decisive support for the inclusion of a circadian rhythm and heterogeneous immigrant reproduction numbers in our model for online discussion on the \\texttt{r/ireland} subreddit.",
     align = "|c|c|c|c|c|c|"
   ) %>% 
   print.xtable(
@@ -997,7 +1051,11 @@ prediction_summary %>%
     )
 ```
 
-compute crps for the empirical baseline
+### Figure 6
+
+This figure presents our analysis of the CRPS skill score comparing the predictions for the cluster size after 48 hours to the empirical distribution.
+
+We start by computing the mean CRPS for the training set of clusters using the empirical distribution.
 
 ```{r baseline_crps}
 train_size <- train_df %>% 
@@ -1009,7 +1067,7 @@ baseline_crps <- sapply(prediction_summary$size, compute_pwm_crps, pred = train_
   mean()
 ```
 
-create the dataframe required to present the crps skill scores
+Create the data frame required to present the CRPS skill scores for each learning interval.
 
 ```{r compute_crps}
 crps_df <- prediction_summary %>% 
@@ -1031,22 +1089,22 @@ crps_df <- crps_df %>%
     se = crps_df %>% 
       filter(stat == 'se') %>% 
       use_series(value)
-  )
+  ) %>% 
+  filter(s < 10)
 ```
 
-plot illustrating skill scores 
+We then construct the plot illustrating skill scores.
 
 ```{r crps_assessment, fig.height=3, fig.width=7}
 crps_df %>%
-  mutate(lower = 1 - ((mean - se) / baseline_crps)) %>% 
-  mutate(upper = 1 - ((mean + se) / baseline_crps)) %>% 
+  mutate(lower = 1 - ((mean - se) / baseline_crps)) %>%
+  mutate(upper = 1 - ((mean + se) / baseline_crps)) %>%
   mutate(mean = 1 - (mean / baseline_crps)) %>% 
   ggplot() +
   geom_point(aes(x = s, y = mean, color = model)) + 
   geom_line(aes(x = s, y = mean, color = model)) + 
-  geom_errorbar(aes(x = s, ymin = lower, ymax = upper, color = model), width = 0.75) +
+  geom_errorbar(aes(x = s, ymin = lower, ymax = upper, color = model), width = 0.25) +
   scale_color_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'), TeX('$M_4$'), TeX('$M_5$'))) +
-  # geom_hline(yintercept = baseline_crps, lty = 2) +
   my_theme +
   labs(
     title = 'Predicting discussion size',
@@ -1056,26 +1114,30 @@ crps_df %>%
   )
 ```
 
-# Goodness-of-fit
 
-load simulated data sets seeded by immigrants in the full data set
+## Assessing goodness-of-fit
+
+### Figure 7
+
+This figure present an analysis of the goodness of fit for each model to the set of all discussions seeded during the training interval.
 
 ```{r}
+# load simulated data sets seeded by immigrants in the full data set
 discussion_size <- readRDS('predictions/discussion_size.RDS')
-
-# discussion_size <- discussion_size %>% 
-#   filter(t < 24 * 21) 
-
-discussion_size <- discussion_size %>% 
-  filter(discussion %in% train_df$discussion) 
+# select only those discussions seeded during the training interval
+# discussion_size <- discussion_size %>%
+#   filter(t < 24 * 21)
+# select only those discussions included in the training set
+discussion_size <- discussion_size %>%
+  filter(discussion %in% train_df$discussion)
 ```
 
-bootstrapped estimates of the ks test statistic
+We first compute bootstrapped estimates of the ks test statistic comparing predicted cluster sizes from each model to the empirical data. 
 
 ```{r ks_test_statistic}
 ks_boot <- replicate(1000, {
   tmp_df <- discussion_size %>% 
-  slice_sample(n = 10000, replace = TRUE) 
+  slice_sample(n = 2017, replace = TRUE) 
   
   tmp_df %>% 
     select(starts_with("M")) %>% 
@@ -1084,8 +1146,6 @@ ks_boot <- replicate(1000, {
     })
 })
 ```
-
-plot illustrating ks test statistics
 
 ```{r ks_check, fig.height=3, fig.width=6}
 gg_ks <- ks_boot %>% 
@@ -1110,7 +1170,7 @@ gg_ks <- ks_boot %>%
   )
 ```
 
-compute the size of each discussion
+We then compare the mean discussion size for each hour of the day using only our full generative model and the empirical data.
 
 ```{r}
 ds_df <- discussion_size %>% 
@@ -1121,8 +1181,6 @@ ds_df <- discussion_size %>%
   ungroup() %>% 
   mutate(time = hod + 0.5)
 ```
-
-plot the hourly mean discussion size
 
 ```{r time_evolution_discussion_size, fig.height=3, fig.width=6}
 gg_time_evo <- ds_df %>% 
@@ -1139,7 +1197,7 @@ gg_time_evo <- ds_df %>%
   ggplot() +
   geom_hline(yintercept = mean((discussion_size$n)), lty = 2) +
   geom_errorbar(
-    aes(x = time, ymin = mean - 3 * se, ymax = mean + 3 * se, color = variable)
+    aes(x = time, ymin = mean - se, ymax = mean + se, color = variable)
   ) +
   geom_point(
     aes(x = time, y = mean, color = variable)
@@ -1158,7 +1216,7 @@ gg_time_evo <- ds_df %>%
   )
 ```
 
-quantile dataframe
+Finally, we produce quantile-quantile plots comparing the distriution of discussion sizes for each model to the empirical distribution
 
 ```{r}
 qq_df <- discussion_size %>% 
@@ -1169,16 +1227,10 @@ qq_df <- discussion_size %>%
   ungroup()
 ```
 
-quantile-quantile plots
-
 ```{r qq_plots, fig.height=3, fig.width=6}
 gg_qq <- qq_df %>% 
   ggplot() +
   geom_abline(slope = 1, intercept = 0) +
-  # geom_point(
-  #   data = transform(qq_df, variable = NULL), 
-  #   aes(x = n, y = value),
-  #   colour = "grey85") +
   geom_point(
     aes(x = n, y = value, color = variable)
   ) +
@@ -1201,9 +1253,8 @@ gg_qq <- qq_df %>%
   )
 ```
 
-goodness of fit plot for the manuscript. note that a pdf version of this plot results in an overly large file so this figure is saved as a png
-
 ```{r gof, fig.height=6, fig.width=6, dev = "png", dpi=120}
+# note that a pdf version of this plot results in an overly large file so this figure is saved as a png
 gg_cm_gof <- ggarrange(
   gg_ks, gg_qq, common.legend = TRUE, labels = "auto", align = "hv"
 )
@@ -1211,37 +1262,27 @@ gg_cm_gof <- ggarrange(
 ggarrange(gg_cm_gof, gg_time_evo, nrow = 2, labels = list("", "c"))
 ```
 
-code for computations that inform in discussion in the manuscript
-
 ```{r, eval = FALSE}
-discussion_size %>% 
-  select(-time, -t, -tod, -discussion) %>% 
-  melt(id.vars = "n") %>% 
-  group_by(variable) %>% 
-  mutate(n = sort(n), value = sort(value)) %>% 
-  mutate(qqmatch = n == value) %>% 
-  summarise(max_match = max(which(qqmatch)) / 38616)
+# code for computations that inform in discussion in the manuscript
+mean(ks_boot[1, ] > ks_boot[4, ])
+mean(ks_boot[1, ] > ks_boot[5, ])
 
-discussion_size %>% 
-  select(-time, -t, -tod, -discussion) %>% 
-  melt(id.vars = "n") %>% 
-  group_by(variable) %>% 
-  mutate(n = sort(n), value = sort(value)) %>% 
-  mutate(qqmatch = n == value) %>% 
-  summarise(max_match = max(n[qqmatch]))
+mean(ks_boot[2, ] > ks_boot[4, ])
+mean(ks_boot[2, ] > ks_boot[5, ])
 
-F0 <- ecdf(discussion_size$n)
-F0(10)
-1 - F0(50)
+mean(ks_boot[3, ] > ks_boot[4, ])
+mean(ks_boot[3, ] > ks_boot[5, ])
 
-F1 <- ecdf(discussion_size$M4)
-F1(10)
-
+mean(ks_boot[4, ] > ks_boot[5, ])
 ```
 
 # Appendices
 
 ## Circadian Rhythm
+
+### Figure 8
+
+Perform the spectral analysis
 
 ```{r count_spectral_density, fig.width=6, fig.height=3}
 spec <- messageboard_df %>% 
@@ -1271,10 +1312,15 @@ data.frame(f = 24 * spec$freq, d = log(abs(spec$spec)^2)) %>%
   my_theme
 ```
 
+### Table 5
+
+Assess evidence for each basis function
+
 ```{r}
 evidence_freq_1 <- readRDS("evidence/evidence_freq_1.RDS")
 evidence_freq_2 <- readRDS("evidence/evidence_freq_2.RDS")
 evidence_freq_3 <- readRDS("evidence/evidence_freq_3.RDS")
+evidence_freq_4 <- readRDS("evidence/evidence_freq_4.RDS")
 ```
 
 ```{r}
@@ -1285,6 +1331,9 @@ bf_table_df <-  data.frame(Model = "$\\mathcal {M}_1$",  BF = bayes_factor(evide
   rbind(
     data.frame(Model = "$\\mathcal {M}_3$",  BF = bayes_factor(evidence_freq_3, evidence_freq_2, log = TRUE)$bf %>% round(digits = 2))
   ) %>% 
+  rbind(
+    data.frame(Model = "$\\mathcal {M}_4$",  BF = bayes_factor(evidence_freq_4, evidence_freq_2, log = TRUE)$bf %>% round(digits = 2))
+  ) %>%
   mutate("$\\ln \\mathcal{BF}_{l 2}$" = BF) %>% 
   select(-BF)
 ```
@@ -1294,13 +1343,13 @@ bf_table_df %>%
   extract(, 2) %>% 
   t() %>% 
   set_colnames(
-    c("$\\mathcal {M}_1$","$\\mathcal {M}_2$", "$\\mathcal {M}_3$")
+    c("$\\mathcal {M}_1$","$\\mathcal {M}_2$", "$\\mathcal {M}_3$", "$\\mathcal {M}_4$")
   ) %>% 
   set_rownames("$\\ln \\mathcal{BF}_{l2}$") %>% 
   xtable(
     label = "tab:freq_bf_estimates",
-    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_2$, that is, $\\ln \\mathcal{BF}_{l2}$ for $l = 1, \\dots, 3$. The evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence. This analysis presents decisive evidence to support a choice of $K > 1$.",
-    align = "|l|c|c|c|"
+    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_2$, that is, $\\ln \\mathcal{BF}_{l2}$ for $l = 1, \\dots, 4$. The evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence. This analysis presents overwhelming evidence to support a choice of $K > 1$.",
+    align = "|l|c|c|c|c|"
   ) %>% 
   print.xtable(
     include.rownames = T,
@@ -1311,10 +1360,15 @@ bf_table_df %>%
     )
 ```
 
+### Figure 9
+
+Plot the activity function under each model
+
 ```{r}
 fit_freq_1 <- readRDS("models/fit_freq_1.RDS")
 fit_freq_2 <- readRDS("models/fit_freq_2.RDS")
 fit_freq_3 <- readRDS("models/fit_freq_3.RDS")
+fit_freq_4 <- readRDS("models/fit_freq_4.RDS")
 ```
 
 ```{r freq_activity_functions, fig.width=6, fig.height=3}
@@ -1345,6 +1399,15 @@ fit_freq_1 %>%
       )) %>% 
       data.frame(K = 3, t, .)
   ) %>% 
+  rbind(
+    fit_freq_4 %>% 
+      as.data.frame() %>% 
+      select(starts_with("alpha")) %>% 
+      apply(1, function(x) 1 + sinusoidal_function(
+        t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:4]
+      )) %>% 
+      data.frame(K = 4, t, .)
+  ) %>% 
   melt(id.vars = c("K", "t")) %>% 
   mutate(K = as.factor(K)) %>% 
   group_by(K, t) %>%
@@ -1358,8 +1421,8 @@ fit_freq_1 %>%
   geom_hline(yintercept = 1, lty = 2) +
   geom_ribbon(aes(x = t, ymin = ci.low, ymax = ci.up, fill = K), alpha = 0.1) +
   geom_line(aes(x = t, y = average, color = K)) +
-  scale_fill_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'))) +
-  scale_color_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'))) +
+  scale_fill_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'), TeX('$M_4$'))) +
+  scale_color_viridis_d(label = c(TeX('$M_1$'), TeX('$M_2$'), TeX('$M_3$'), TeX('$M_4$'))) +
   scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 6)) +
   my_theme +
   labs(

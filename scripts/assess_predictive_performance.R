@@ -2,6 +2,7 @@
 
 # assesses the predictive performance of each candidate model expected to run in
 # about 24 hours of compute time -  easy to run in parallel.
+# we reduce this to 3 hours by paralellising the analysis
 timestamp()
 print('running model assessment')
 
@@ -15,16 +16,14 @@ library(magrittr)
 library(future.apply)
 library(matrixStats)
 
-# future ------------------------------------------------------------------
+# specify parallel futures ------------------------------------------------
 
 plan("multisession", workers = 8)
 
 # data --------------------------------------------------------------------
 
-# reformat the branching structure within each discussion
-# timestamp()
+# specify the branching structure within each discussion
 df <- test_df %>%
-# df <- train_df %>%
   arrange(discussion) %>%
   group_by(discussion) %>%
   mutate(tau = t - min(t)) %>% 
@@ -38,7 +37,6 @@ df <- test_df %>%
   ) %>%
   mutate(within_discussion_id = seq_along(id)) %>%
   ungroup()
-# timestamp()
 # expect to take about 5 minutes with 8 workers
 
 # set up data frame to store assessment statistics 
@@ -189,7 +187,6 @@ prediction_summary$elpd_M2 <-
                perform_checks = F
              )
            }) %>%
-      # mean()
       logSumExp() %>% 
       subtract(log(n_sim))
   }, future.seed=TRUE)
@@ -274,7 +271,6 @@ prediction_summary$elpd_M3 <-
                perform_checks = F
              )
            }) %>%
-      # mean()
       logSumExp() %>% 
       subtract(log(n_sim))
   }, future.seed=TRUE)
@@ -367,7 +363,6 @@ prediction_summary$elpd_M4 <-
                perform_checks = FALSE
              )
            }) %>%
-      # mean()
       logSumExp() %>% 
       subtract(log(n_sim))
   }, future.seed = T)
@@ -456,7 +451,6 @@ prediction_summary$elpd_M5 <-
                perform_checks = F
              )
            }) %>%
-      # mean()
       logSumExp() %>% 
       subtract(log(n_sim))
   }, future.seed=TRUE)

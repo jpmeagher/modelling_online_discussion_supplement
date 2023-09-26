@@ -14,7 +14,14 @@ plan("multisession", workers = 8)
 
 # data --------------------------------------------------------------------
 
-df <- messageboard_df
+# observation interval
+a <- 48
+df <- messageboard_df %>% 
+  mutate(t = as.numeric(difftime(time, dmy_hms(010419000000, tz = "Europe/London"), units = "hours"))) %>%
+  group_by(discussion) %>%
+  mutate(tau = t - min(t)) %>%
+  filter(tau < a)
+
 
 # models ------------------------------------------------------------------
 
@@ -41,8 +48,6 @@ discussion_size <- df %>%
 
 # hyperparameters ---------------------------------------------------------
 
-# observation interval
-a <- 48
 # sinusoidal basis
 K <- 2
 day <- 24
