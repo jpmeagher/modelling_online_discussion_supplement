@@ -1197,7 +1197,7 @@ gg_time_evo <- ds_df %>%
   ggplot() +
   geom_hline(yintercept = mean((discussion_size$n)), lty = 2) +
   geom_errorbar(
-    aes(x = time, ymin = mean - se, ymax = mean + se, color = variable)
+    aes(x = time, ymin = mean - 2*se, ymax = mean + 2*se, color = variable)
   ) +
   geom_point(
     aes(x = time, y = mean, color = variable)
@@ -1427,6 +1427,66 @@ fit_freq_1 %>%
   my_theme +
   labs(
     title = "Absolute-time component of the offspring intensity",
+    x = "Time (hours)",
+    y  = TeX("$\\alpha (t)$"),
+    color = NULL,
+    fill = NULL
+  )
+```
+
+## Immigrant arrivals
+
+### Figure 10
+
+Plot circadian activity functions for immigrant and offspring intensity functions.
+
+```{r}
+fit_pppm <- readRDS("models/fit_pppm.RDS")
+fit_M4 <- readRDS("models/fit_M4.RDS")
+```
+
+```{r immigrant_activity_function, fig.width=6, fig.height=3}
+t <- seq(0, 24, length.out = 101)
+omega <- 2 * pi * (1:2) / 24
+fit_pppm %>% 
+  as.data.frame() %>% 
+  select(starts_with("alpha")) %>% 
+  apply(1, function(x) 1 + sinusoidal_function(
+    t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega
+  )) %>% 
+  data.frame(points = "Immigrant", t, .) %>% 
+  rbind(
+    fit_M4 %>% 
+      as.data.frame() %>% 
+      select(starts_with("alpha")) %>% 
+      apply(
+        1, 
+        function(x){
+          1 + 
+            sinusoidal_function(
+              t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:2]
+              )
+          }
+        ) %>% 
+      data.frame(points = "Offspring", t, .)
+  ) %>% 
+  melt(id.vars = c("points", "t")) %>% 
+  group_by(points, t) %>%
+  summarise(
+    average = mean(value), 
+    ci.low = hdi(value)[1],
+    ci.up = hdi(value)[2]
+    ) %>% 
+  ggplot() +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_ribbon(aes(x = t, ymin = ci.low, ymax = ci.up, fill = points), alpha = 0.1) +
+  geom_line(aes(x = t, y = average, color = points)) +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 6)) +
+  my_theme +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  labs(
+    title = "Absolute-time component of intensity functions",
     x = "Time (hours)",
     y  = TeX("$\\alpha (t)$"),
     color = NULL,
