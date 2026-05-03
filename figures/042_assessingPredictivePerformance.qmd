@@ -1,0 +1,246 @@
+---
+title: "Manuscript Figures & Tables"
+subtitle: "Assessing Predictive Performance"
+author: "J.P. Meagher"
+date: today
+format:
+  pdf:
+    keep-tex: true
+    fig-width: 6
+    fig-crop: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    crop: null
+    dev: "pdf"
+---
+
+```{r setup}
+library(onlineMessageboardActivity)
+library(dplyr)
+library(ggplot2)
+library(xtable)
+library(reshape2)
+library(latex2exp)
+library(magrittr)
+library(tidyr)
+
+source(here::here("code_modules/plotting.R"))
+```
+
+```{r load_data}
+prediction_summary <- readRDS(here::here("predictions/prediction_summary.RDS"))
+sim_sizes <- readRDS(here::here("predictions/simulated_sizes.RDS"))
+# sim_sizes is a list over 5 models, each containing a list over 7 observation horizons,
+# each containing a 100 x 3716 matrix of simulated discussion sizes for the 3716 test discussions.
+
+# observation intervals used in assess_predictive_performance.R
+s <- c(0, 2^(0:5))
+
+# model labels for plotting
+model_labels <- c(
+  TeX("$M_1$"), TeX("$M_2$"), TeX("$M_3$"), TeX("$M_4$"), TeX("$M_5$")
+)
+```
+
+# Expected Log Predictive Density
+
+```{r lpd_prediction_table, results='asis'}
+prediction_summary |>
+  as.data.frame() |>
+  select(starts_with("elpd")) |>
+  mutate(across(everything(), ~ .x - prediction_summary$elpd_M4)) |>
+  summarise(across(everything(), ~ {
+    n <- sum(!is.na(.x))
+    m <- sum(.x)
+    se <- sd(.x) * sqrt(n)
+    paste0(
+      sprintf("%.1f", m), " (", sprintf("%.1f", se), ")"
+    )
+  })) |>
+  set_colnames(
+    c(
+      "$\\mathcal{M}_1$", "$\\mathcal{M}_2$", "$\\mathcal{M}_3$",
+      "$\\mathcal{M}_4$", "$\\mathcal{M}_5$"
+    )
+  ) |>
+  set_rownames("$\\Delta \\widehat{\\operatorname{lpd}}_{l4}$") |>
+  xtable(
+    label = "tab:lpd",
+    caption = "The difference (standard error) in log cluster-wise predictive density on $\\boldsymbol y_{\\operatorname{test}}$ between each model and $\\mathcal M_4$.",
+    align = "|c|c|c|c|c|c|"
+  ) |>
+  print.xtable(
+    include.rownames = TRUE,
+    include.colnames = TRUE,
+    type = "latex",
+    sanitize.text.function = function(x) x,
+    comment = FALSE
+  )
+```
+
+# CRPS Skill Scores
+
+```{r baseline_crps}
+train_size <- train_df |>
+  group_by(discussion) |>
+  summarise(size = length(discussion)) |>
+  pull(size)
+
+baseline_crps <- sapply(
+  prediction_summary$size,
+  compute_pwm_crps,
+  pred = train_size,
+  perform_checks = FALSE
+) |>
+  mean()
+```
+
+```{r compute_crps}
+crps_df <- prediction_summary |>
+  select(contains("crps")) |>
+  summarise(across(
+    everything(),
+    list(
+      mean = mean,
+      se = \(x) sd(x) / sqrt(length(x))
+    )
+  )) |>
+  reshape2::melt() |>
+  mutate(variable = as.character(variable)) |>
+  mutate(
+    model_s = sapply(strsplit(variable, "_"), \(x) x[2]),
+    stat = sapply(strsplit(variable, "_"), \(x) x[3]),
+    model = sapply(strsplit(model_s, ".", fixed = TRUE), \(x) x[1]),
+    s = as.numeric(sapply(strsplit(model_s, ".", fixed = TRUE), \(x) x[2])),
+    s = c(0, 2^(0:5))[s]
+  )
+
+crps_df <- crps_df |>
+  filter(stat == "mean") |>
+  mutate(mean = value) |>
+  cbind(
+    se = crps_df |>
+      filter(stat == "se") |>
+      pull(value)
+  ) |>
+  filter(s < 10)
+```
+
+```{r crps_assessment, fig.height=3, fig.width=7, fig.cap="CRPS skill scores for predicting discussion size relative to the empirical distribution baseline."}
+crps_df |>
+  mutate(
+    lower = 1 - ((mean - se) / baseline_crps),
+    upper = 1 - ((mean + se) / baseline_crps),
+    mean = 1 - (mean / baseline_crps)
+  ) |>
+  ggplot() +
+  geom_point(aes(x = s, y = mean, color = model)) +
+  geom_line(aes(x = s, y = mean, color = model)) +
+  geom_errorbar(
+    aes(x = s, ymin = lower, ymax = upper, color = model),
+    width = 0.25
+  ) +
+  scale_color_viridis_d(labels = model_labels) +
+  my_theme +
+  labs(
+    title = "Predicting discussion size",
+    y = "Skill score",
+    x = "Observation interval (hours after immigrant seed)",
+    color = NULL
+  )
+```
+
+# Empirical Coverage Probabilities
+
+For each model $\mathcal{M}_l$ and observation horizon $s$, we compute the empirical coverage probability at nominal levels $1 - \alpha$ for $\alpha \in \{0.20, 0.10, 0.05\}$. For each discussion $i$, a $(1 - \alpha)$ highest density region (HDR) is constructed from the 100 posterior predictive simulations of $n_i$. The HDR is the shortest interval $[l, u]$ containing at least $(1-\alpha)$ of the simulated values. For the right-skewed count distributions typical of discussion sizes, the HDR is generally anchored at the mode (often 1), producing sharper intervals than the conventional equal-tailed approach.
+
+The empirical coverage is the proportion of discussions for which the observed $n_i$ falls within the HDR.
+
+```{r compute_coverage}
+nominal_levels <- c(0.80, 0.90, 0.95)
+model_names <- c("M1", "M2", "M3", "M4", "M5")
+
+compute_hdr_coverage <- function(sim_mat, observed, level) {
+  # HDInterval::hdi on a matrix returns a 2-row matrix (lower, upper)
+  # with one column per input column, i.e. one column per discussion.
+  hdr <- HDInterval::hdi(sim_mat, credMass = level)
+  mean(observed >= hdr[1, ] & observed <= hdr[2, ])
+}
+
+coverage_df <- expand.grid(
+  model = model_names,
+  s_idx = seq_along(s),
+  nominal = nominal_levels,
+  stringsAsFactors = FALSE
+) |>
+  mutate(
+    s_val = s[s_idx],
+    empirical = purrr::pmap_dbl(
+      list(model, s_idx, nominal),
+      function(m, h, lvl) {
+        compute_hdr_coverage(
+          sim_sizes[[m]][[h]],
+          prediction_summary$size,
+          lvl
+        )
+      }
+    )
+  )
+```
+
+```{r coverage_table, results='asis'}
+# Coverage at s = 0 (no observation) for all models
+coverage_df |>
+  filter(s_val == 0) |>
+  mutate(
+    nominal_pct = paste0(nominal * 100, "\\%"),
+    empirical_pct = sprintf("%.1f\\%%", empirical * 100),
+    model_label = paste0("$\\mathcal{M}_", gsub("M", "", model), "$")
+  ) |>
+  select(model_label, nominal_pct, empirical_pct) |>
+  pivot_wider(
+    names_from = model_label,
+    values_from = empirical_pct
+  ) |>
+  set_colnames(c(
+    "Nominal",
+    "$\\mathcal{M}_1$", "$\\mathcal{M}_2$", "$\\mathcal{M}_3$",
+    "$\\mathcal{M}_4$", "$\\mathcal{M}_5$"
+  )) |>
+  xtable(
+    caption = "Empirical coverage probabilities based on highest density regions for predicted discussion size $n_i$ at $s = 0$ (prediction from the immigrant seed only). Each HDR is constructed from 100 posterior predictive simulations. Well-calibrated prediction regions should have empirical coverage close to the nominal level.",
+    label = "tab:coverage_s0",
+    align = "|l|c|c|c|c|c|c|"
+  ) |>
+  print.xtable(
+    include.rownames = FALSE,
+    type = "latex",
+    sanitize.text.function = function(x) x,
+    comment = FALSE
+  )
+```
+
+```{r coverage_by_horizon, fig.height=4, fig.width=7, fig.cap="Empirical coverage probabilities of highest density regions as a function of observation horizon for 90\\% prediction regions. The dashed line indicates the nominal 90\\% level."}
+coverage_df |>
+  filter(nominal == 0.90, s_val < 10) |>
+  ggplot(aes(x = s_val, y = empirical, color = model)) +
+  geom_hline(yintercept = 0.90, lty = 2) +
+  geom_point() +
+  geom_line() +
+  scale_color_viridis_d(labels = model_labels) +
+  scale_y_continuous(
+    limits = c(0.5, 1),
+    labels = scales::percent_format()
+  ) +
+  my_theme +
+  labs(
+    title = "Empirical coverage of 90% highest density regions",
+    x = "Observation interval (hours after immigrant seed)",
+    y = "Empirical coverage",
+    color = NULL
+  )
+```

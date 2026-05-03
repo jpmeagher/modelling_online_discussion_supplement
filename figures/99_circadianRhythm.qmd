@@ -1,0 +1,193 @@
+---
+title: "Manuscript Figures & Tables"
+subtitle: "Circadian Rhythm"
+author: "J.P. Meagher"
+date: today
+format:
+  pdf:
+    keep-tex: true
+    fig-width: 6
+    fig-crop: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    crop: null
+    dev: "pdf"
+---
+
+```{r setup}
+library(onlineMessageboardActivity)
+library(dplyr)
+library(ggplot2)
+library(latex2exp)
+library(magrittr)
+library(reshape2)
+library(xtable)
+library(HDInterval)
+library(bridgesampling)
+
+source(here::here("code_modules/plotting.R"))
+```
+
+# Appendix: Circadian Rhythm
+
+## Spectral analysis
+
+Spectral analysis of the total points per hour.
+
+```{r count_spectral_density, fig.width=6, fig.height=3}
+spec <- messageboard_df |>
+  mutate(hr = hour(time), dy = day(time), mh = month(time)) |>
+  group_by(hr, dy, mh) |>
+  summarise(N = length(time), .groups = "drop") |>
+  arrange(mh, dy) |>
+  use_series(N) |>
+  spec.pgram(plot = FALSE)
+
+data.frame(f = 24 * spec$freq, d = log(abs(spec$spec)^2)) |>
+  ggplot() +
+  geom_line(aes(x = f, y = d)) +
+  geom_vline(xintercept = 1, col = "red", lty = 2) +
+  geom_vline(xintercept = 2, col = "red", lty = 2) +
+  scale_x_continuous(breaks = 0:12) +
+  labs(
+    title = "Spectral analysis of the total points per hour",
+    x = "Frequency (oscillations per day)",
+    y = "log Spectral density"
+  ) +
+  my_theme
+```
+
+## Bayes factors for frequency basis selection
+
+Assess evidence for each basis function.
+
+```{r load_freq_evidence}
+evidence_freq_1 <- readRDS(here::here("evidence/evidence_freq_1.RDS"))
+evidence_freq_2 <- readRDS(here::here("evidence/evidence_freq_2.RDS"))
+evidence_freq_3 <- readRDS(here::here("evidence/evidence_freq_3.RDS"))
+evidence_freq_4 <- readRDS(here::here("evidence/evidence_freq_4.RDS"))
+```
+
+```{r freq_bf_table_df}
+bf_table_df <- data.frame(
+  Model = c(
+    "$\\mathcal{M}_1$", "$\\mathcal{M}_2$",
+    "$\\mathcal{M}_3$", "$\\mathcal{M}_4$"
+  ),
+  BF = c(
+    bayes_factor(evidence_freq_1, evidence_freq_2, log = TRUE)$bf,
+    bayes_factor(evidence_freq_2, evidence_freq_2, log = TRUE)$bf,
+    bayes_factor(evidence_freq_3, evidence_freq_2, log = TRUE)$bf,
+    bayes_factor(evidence_freq_4, evidence_freq_2, log = TRUE)$bf
+  )
+) |>
+  mutate(BF = round(BF, digits = 2)) |>
+  mutate("$\\ln \\mathcal{BF}_{l 2}$" = BF) |>
+  select(-BF)
+```
+
+```{r freq_evidence_estimate, results='asis'}
+bf_table_df |>
+  extract(, 2) |>
+  t() |>
+  set_colnames(c(
+    "$\\mathcal{M}_1$", "$\\mathcal{M}_2$",
+    "$\\mathcal{M}_3$", "$\\mathcal{M}_4$"
+  )) |>
+  set_rownames("$\\ln \\mathcal{BF}_{l2}$") |>
+  xtable(
+    label = "tab:freq_bf_estimates",
+    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_2$, that is, $\\ln \\mathcal{BF}_{l2}$ for $l = 1, \\dots, 4$. The evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence. This analysis presents overwhelming evidence to support a choice of $K > 1$.",
+    align = "|l|c|c|c|c|"
+  ) |>
+  print.xtable(
+    include.rownames = TRUE,
+    include.colnames = TRUE,
+    type = "latex",
+    sanitize.text.function = function(x) x,
+    comment = FALSE
+  )
+```
+
+## Activity function under each basis
+
+Activity function under each frequency basis model.
+
+```{r load_freq_models}
+fit_freq_1 <- readRDS(here::here("models/fit_freq_1.RDS"))
+fit_freq_2 <- readRDS(here::here("models/fit_freq_2.RDS"))
+fit_freq_3 <- readRDS(here::here("models/fit_freq_3.RDS"))
+fit_freq_4 <- readRDS(here::here("models/fit_freq_4.RDS"))
+```
+
+```{r freq_activity_functions, fig.width=6, fig.height=3}
+t <- seq(0, 24, length.out = 101)
+omega <- 2 * pi * (1:5) / 24
+
+fit_freq_1 |>
+  as.data.frame() |>
+  select(starts_with("alpha")) |>
+  apply(1, function(x) {
+    1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1])
+  }) |>
+  data.frame(K = 1, t = t) |>
+  rbind(
+    fit_freq_2 |>
+      as.data.frame() |>
+      select(starts_with("alpha")) |>
+      apply(1, function(x) {
+        1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:2])
+      }) |>
+      data.frame(K = 2, t = t)
+  ) |>
+  rbind(
+    fit_freq_3 |>
+      as.data.frame() |>
+      select(starts_with("alpha")) |>
+      apply(1, function(x) {
+        1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:3])
+      }) |>
+      data.frame(K = 3, t = t)
+  ) |>
+  rbind(
+    fit_freq_4 |>
+      as.data.frame() |>
+      select(starts_with("alpha")) |>
+      apply(1, function(x) {
+        1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega[1:4])
+      }) |>
+      data.frame(K = 4, t = t)
+  ) |>
+  melt(id.vars = c("K", "t")) |>
+  mutate(K = as.factor(K)) |>
+  group_by(K, t) |>
+  summarise(
+    average = mean(value),
+    ci.low = hdi(value)[1],
+    ci.up = hdi(value)[2],
+    .groups = "drop"
+  ) |>
+  ggplot() +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_ribbon(aes(x = t, ymin = ci.low, ymax = ci.up, fill = K), alpha = 0.1) +
+  geom_line(aes(x = t, y = average, color = K)) +
+  scale_fill_viridis_d(
+    labels = c(TeX("$M_1$"), TeX("$M_2$"), TeX("$M_3$"), TeX("$M_4$"))
+  ) +
+  scale_color_viridis_d(
+    labels = c(TeX("$M_1$"), TeX("$M_2$"), TeX("$M_3$"), TeX("$M_4$"))
+  ) +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 6)) +
+  my_theme +
+  labs(
+    title = "Absolute-time component of the offspring intensity",
+    x = "Time (hours)",
+    y = TeX("$\\alpha (t)$"),
+    color = NULL,
+    fill = NULL
+  )
+```

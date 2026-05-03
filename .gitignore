@@ -3,3 +3,14 @@
 .RData
 .Ruserdata
 *.RDS
+WORKFLOW.md
+todo.md
+/workingWithClaude
+/reviewerComments
+/responseLetter
+/manuscript
+/draftRevisions
+/figures/*_files/
+/figures/*.tex
+/figures/*.pdf
+.github/

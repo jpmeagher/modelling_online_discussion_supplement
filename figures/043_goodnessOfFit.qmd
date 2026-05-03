@@ -1,0 +1,205 @@
+---
+title: "Manuscript Figures & Tables"
+subtitle: "Goodness of Fit"
+author: "J.P. Meagher"
+date: today
+format:
+  pdf:
+    keep-tex: true
+    fig-width: 6
+    fig-crop: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    crop: null
+    dev: "pdf"
+---
+
+```{r setup}
+library(onlineMessageboardActivity)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(latex2exp)
+library(magrittr)
+library(reshape2)
+library(stringr)
+
+source(here::here("code_modules/plotting.R"))
+source(here::here("code_modules/helpers.R"))
+```
+
+## Goodness-of-fit assessment
+
+This figure presents an analysis of the goodness of fit for each model to the set of all discussions seeded during the training interval.
+
+```{r load_data}
+discussion_size <- readRDS(here::here("predictions/discussion_size.RDS"))
+
+# Select only those discussions included in the training set
+discussion_size <- discussion_size |>
+  filter(discussion %in% train_df$discussion)
+```
+
+We first compute bootstrapped estimates of the KS test statistic comparing predicted cluster sizes from each model to the empirical data.
+
+```{r ks_test_statistic}
+ks_boot <- replicate(1000, {
+  tmp_df <- discussion_size |>
+    slice_sample(n = 2017, replace = TRUE)
+
+  tmp_df |>
+    select(starts_with("M")) |>
+    apply(2, function(x) {
+      ks.test(tmp_df$n, x)$statistic
+    })
+})
+```
+
+```{r ks_check, fig.height=3, fig.width=6}
+gg_ks <- ks_boot |>
+  t() |>
+  data.frame() |>
+  melt() |>
+  ggplot() +
+  geom_histogram(
+    aes(x = value, y = after_stat(density), fill = variable),
+    position = "identity", alpha = 0.5, binwidth = 0.0025
+  ) +
+  scale_fill_viridis_d(
+    labels = c(TeX("$M_1$"), TeX("$M_2$"), TeX("$M_3$"), TeX("$M_4$"), TeX("$M_5$"))
+  ) +
+  my_theme +
+  theme(legend.position = "bottom") +
+  labs(
+    title = "Bootstrap estimates",
+    x = "Kolmogorov-Smirnov test statistic",
+    y = "Density",
+    fill = NULL
+  )
+```
+
+We then compare the mean discussion size for 3-hour blocks during the day comparing our the simplest generative model and the full generative model to the empirical data.
+
+```{r time_evolution_data}
+ds_df <- discussion_size |>
+  mutate(two_hour_bin = floor(tod / 3) * 3) |>
+  select(two_hour_bin, n, dplyr::starts_with("M")) |>
+  group_by(two_hour_bin) |>
+  summarise(
+    across(everything(), list(mean = mean, se = se)),
+    .groups = "drop"
+  ) |>
+  mutate(time = two_hour_bin + 1.5)
+```
+
+```{r time_evolution_discussion_size, fig.height=3, fig.width=6}
+time_evo_df <- ds_df |>
+  select(time, ends_with("mean")) |>
+  melt(id.vars = "time") |>
+  mutate(mean = value) |>
+  select(-value) |>
+  cbind(
+    ds_df |>
+      select(time, ends_with("se")) |>
+      melt(id.vars = "time") |>
+      select(se = value)
+  ) |> 
+  mutate(variable = ifelse(variable == "n_mean", "data", str_replace(variable, "_mean", "")))
+
+gg_time_evo <- time_evo_df |>
+  ggplot() +
+  geom_hline(yintercept = mean(discussion_size$n), lty = 2) +
+  geom_errorbar(
+    data = filter(time_evo_df, variable == "data"),
+    aes(x = time, ymin = mean - 2 * se, ymax = mean + 2 * se)
+  ) +
+  geom_point(
+    data = filter(time_evo_df, variable == "data"),
+    aes(x = time, y = mean)
+  ) +
+  geom_line(
+    data = filter(time_evo_df, variable %in% c("M1", "M4")),
+    aes(x = time, y = mean, color = variable)
+  ) +
+  my_theme +
+  scale_color_manual(
+    values = c(viridisLite::viridis(5)[1], viridisLite::viridis(5)[4]),
+    labels = expression(M[1], M[4])
+  ) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = "The time evolution of mean discussion size",
+    subtitle = expression(M[1] * " and " * M[4] * " compared to empirical data"),
+    x = "Hour of the day",
+    y = "Mean discussion size",
+    color = NULL
+  )
+
+gg_time_evo
+```
+
+Finally, we produce quantile-quantile plots comparing the distribution of discussion sizes for each model to the empirical distribution.
+
+```{r qq_data}
+qq_df <- discussion_size |>
+  select(-time, -t, -tod, -discussion) |>
+  melt(id.vars = "n") |>
+  group_by(variable) |>
+  mutate(n = sort(n), value = sort(value)) |>
+  ungroup()
+```
+
+```{r qq_plots, fig.height=3, fig.width=6}
+gg_qq <- qq_df |>
+  ggplot() +
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point(aes(x = n, y = value, color = variable)) +
+  facet_wrap(vars(variable), nrow = 1) +
+  scale_x_log10() +
+  scale_y_log10() +
+  my_theme +
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    legend.position = "bottom"
+  ) +
+  scale_color_viridis_d(
+    labels = c(TeX("$M_1$"), TeX("$M_2$"), TeX("$M_3$"), TeX("$M_4$"), TeX("$M_5$"))
+  ) +
+  labs(
+    title = "Q-Q plots",
+    x = "Empirical discussion sizes",
+    y = "Simulated discussion sizes",
+    color = NULL
+  )
+```
+
+```{r 04_analysisAndResults_fig-gof, fig.height=6, fig.width=6, dev="png", dpi=120}
+# Note: a PDF version of this plot results in an overly large file,
+# so this figure is saved as a PNG.
+gg_cm_gof <- ggarrange(
+  gg_ks, gg_qq,
+  common.legend = TRUE, labels = "auto", align = "hv"
+)
+
+ggarrange(gg_cm_gof, gg_time_evo, nrow = 2, labels = list("", "c"))
+```
+
+```{r ks_comparisons, eval=FALSE}
+# Code for computations that inform discussion in the manuscript
+mean(ks_boot[1, ] > ks_boot[4, ])
+mean(ks_boot[1, ] > ks_boot[5, ])
+
+mean(ks_boot[2, ] > ks_boot[4, ])
+mean(ks_boot[2, ] > ks_boot[5, ])
+
+mean(ks_boot[3, ] > ks_boot[4, ])
+mean(ks_boot[3, ] > ks_boot[5, ])
+
+mean(ks_boot[4, ] > ks_boot[5, ])
+```
