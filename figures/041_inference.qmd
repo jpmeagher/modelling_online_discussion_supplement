@@ -1,0 +1,343 @@
+---
+title: "Manuscript Figures & Tables"
+subtitle: "Inference"
+author: "J.P. Meagher"
+format:
+  pdf:
+    keep-tex: true
+    fig-width: 6
+    fig-crop: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    crop: null
+    dev: "pdf"
+---
+
+```{r setup}
+library(onlineMessageboardActivity)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(latex2exp)
+library(magrittr)
+library(reshape2)
+library(xtable)
+library(HDInterval)
+library(bridgesampling)
+
+source(here::here("code_modules/plotting.R"))
+source(here::here("code_modules/helpers.R"))
+```
+
+# Discussion size histograms
+
+```{r discussion_size_histograms}
+train_sizes <- train_df |>
+  count(discussion, name = "n")
+
+test_sizes <- test_df |>
+  count(discussion, name = "n")
+
+size_df <- bind_rows(
+  train_sizes |> mutate(set = "Training"),
+  test_sizes |> mutate(set = "Testing")
+)
+```
+
+```{r 04_inference_fig-discussion_size_histograms, fig.height=3, fig.width=6}
+size_density_df <- size_df |>
+  count(set, n, name = "count") |>
+  group_by(set) |>
+  mutate(density = count / sum(count)) |>
+  ungroup()
+
+# Fit power-law reference lines on log-log scale
+train_fit <- lm(
+  log10(density) ~ log10(n),
+  data = filter(size_density_df, set == "Training")
+)
+test_fit <- lm(
+  log10(density) ~ log10(n),
+  data = filter(size_density_df, set == "Testing")
+)
+
+gg_train_sizes <- size_density_df |>
+  filter(set == "Training") |>
+  ggplot() +
+  geom_abline(
+    intercept = coef(train_fit)[1], slope = coef(train_fit)[2],
+    lty = 2, color = "grey50"
+  ) +
+  geom_point(aes(x = n, y = density)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  my_theme +
+  labs(
+    title = "Training set",
+    x = "Discussion size",
+    y = "Density (log scale)"
+  )
+
+gg_test_sizes <- size_density_df |>
+  filter(set == "Testing") |>
+  ggplot() +
+  geom_abline(
+    intercept = coef(test_fit)[1], slope = coef(test_fit)[2],
+    lty = 2, color = "grey50"
+  ) +
+  geom_point(aes(x = n, y = density)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  my_theme +
+  labs(
+    title = "Testing set",
+    x = "Discussion size",
+    y = "Density (log scale)"
+  )
+
+ggarrange(gg_train_sizes, gg_test_sizes, ncol = 2, labels = "auto")
+```
+
+**Note:** Fitting a linear model on the log-log scale gives estimated power-law decay exponents of $\hat\alpha = 1.70$ (SE $= 0.08$) for the training set and $\hat\alpha = 1.86$ (SE $= 0.08$) for the testing set, consistent with heavy-tailed cascade size distributions typical of online platforms.
+
+# Results: Inference
+
+```{r hyperparameters}
+K <- 2
+omega <- 2 * pi * (1:K) / 24
+```
+
+```{r fitted_models}
+fit_M1 <- readRDS(here::here("models/fit_M1.RDS"))
+fit_M2 <- readRDS(here::here("models/fit_M2.RDS"))
+fit_M3 <- readRDS(here::here("models/fit_M3.RDS"))
+fit_M4 <- readRDS(here::here("models/fit_M4.RDS"))
+fit_M5 <- readRDS(here::here("models/fit_M5.RDS"))
+```
+
+```{r evidence}
+evidence_M1 <- readRDS(here::here("evidence/evidence_M1.RDS"))
+evidence_M2 <- readRDS(here::here("evidence/evidence_M2.RDS"))
+evidence_M3 <- readRDS(here::here("evidence/evidence_M3.RDS"))
+evidence_M4 <- readRDS(here::here("evidence/evidence_M4.RDS"))
+evidence_M5 <- readRDS(here::here("evidence/evidence_M5.RDS"))
+```
+
+## Table 2
+
+This table summarises posterior distributions for each parameter of the model relating to offspring processes.
+
+```{r offspring_process_parameter_table_df}
+parameter_table_df <- fit_M1 |>
+  as.data.frame() |>
+  select("$\\mu_1$" = `mu[1]`, "$\\eta_1$" = `eta[1]`) |>
+  mutate(Model = "$\\mathcal M_1$") |>
+  full_join(
+    fit_M2 |>
+      as.data.frame() |>
+      select(
+        "$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`,
+        "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`
+      ) |>
+      mutate(Model = "$\\mathcal M_2$"),
+    by = join_by(Model, `$\\mu_1$`, `$\\eta_1$`)
+  ) |>
+  full_join(
+    fit_M3 |>
+      as.data.frame() |>
+      select(
+        "$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`,
+        "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`
+      ) |>
+      mutate(Model = "$\\mathcal M_3$"),
+    by = join_by(Model, `$\\mu_1$`, `$\\mu_2$`, `$\\eta_1$`, `$\\eta_2$`)
+  ) |>
+  full_join(
+    fit_M4 |>
+      as.data.frame() |>
+      select(
+        "$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`,
+        "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`,
+        "$\\psi_1$" = `psi[1]`, "$\\psi_2$" = `psi[2]`
+      ) |>
+      mutate(Model = "$\\mathcal M_4$"),
+    by = join_by(Model, `$\\mu_1$`, `$\\mu_2$`, `$\\eta_1$`, `$\\eta_2$`)
+  ) |>
+  full_join(
+    fit_M5 |>
+      as.data.frame() |>
+      select(
+        "$\\mu_1$" = `mu[1]`, "$\\mu_2$" = `mu[2]`,
+        "$\\eta_1$" = `eta[1]`, "$\\eta_2$" = `eta[2]`,
+        "$\\psi_1$" = `psi[1]`
+      ) |>
+      mutate(Model = "$\\mathcal M_5$"),
+    by = join_by(Model, `$\\mu_1$`, `$\\mu_2$`, `$\\eta_1$`, `$\\eta_2$`, `$\\psi_1$`)
+  ) |>
+  group_by(Model) |>
+  summarize(
+    across(
+      c("$\\mu_1$", "$\\mu_2$", "$\\eta_1$", "$\\eta_2$", "$\\psi_1$", "$\\psi_2$"),
+      mean_sd,
+      digits = 2
+    ),
+    .groups = "drop"
+  )
+```
+
+```{r offspring_process_parameter_table, results='asis'}
+parameter_table_df |>
+  xtable(
+    label = "tab:parameter_estimates",
+    caption = "Posterior mean (standard deviation) for the parameters $\\boldsymbol \\eta$, $\\boldsymbol \\mu$, and $\\boldsymbol \\psi$ within each of our candidate models. Considering each of the parameters in turn, the broad agreement on $\\boldsymbol \\mu$ across all the candidate models suggests that the expected number of offspring does not differ between immigrants and offspring. Differences in the offspring distributions for immigrants and offspring are manifest in the memory decay rate, which indicates that the expected generation interval for immigrants is longer than that for offspring. Finally, the values for $\\boldsymbol \\psi$ inferred by $\\mathcal M_4$ suggest that immigrant points have a moderately heterogeneous offspring process while the offspring process for offspring is relatively homogeneous. As such, we include $\\mathcal M_5$ in our analysis, which assumes heterogeneous immigrant and homogeneous offspring processes, respectively.",
+    align = "|l|c|c|c|c|c|c|c|"
+  ) |>
+  print.xtable(
+    include.rownames = FALSE,
+    type = "latex",
+    sanitize.text.function = function(x) x,
+    comment = FALSE
+  )
+```
+
+We include calculations to support assertions on the posterior distributions for each parameter included in the text.
+
+```{r posterior_exploration}
+fit_M4 |>
+  as.data.frame() |>
+  select(starts_with("mu"), starts_with("eta"), starts_with("psi")) |>
+  mutate(
+    `inv_eta[1]` = 1 / `eta[1]`,
+    `inv_eta[2]` = 1 / `eta[2]`
+  ) |>
+  mutate(
+    `prop_zero[1]` = dnbinom(0, size = `psi[1]`, mu = `mu[1]`),
+    `prop_zero[2]` = dnbinom(0, size = `psi[2]`, mu = `mu[2]`)
+  ) |>
+  summarise(across(everything(), \(x) hdi(x, credMass = 0.95))) |>
+  set_rownames(c("ci_lower", "ci_upper")) |>
+  round(digits = 2)
+```
+
+## Figure 5
+
+Posterior inference for the activity function $\alpha(t)$.
+
+```{r 04_inference_fig-alpha_inference, fig.height=3, fig.width=7}
+t <- seq(0, 24, length.out = 101)
+
+alpha_posterior <- fit_M3 |>
+  as.data.frame() |>
+  select(starts_with("alpha")) |>
+  apply(1, function(x) {
+    1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega)
+  }) |>
+  data.frame(model = 3, t = t) |>
+  rbind(
+    fit_M4 |>
+      as.data.frame() |>
+      select(starts_with("alpha")) |>
+      apply(1, function(x) {
+        1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega)
+      }) |>
+      data.frame(model = 4, t = t)
+  ) |>
+  rbind(
+    fit_M5 |>
+      as.data.frame() |>
+      select(starts_with("alpha")) |>
+      apply(1, function(x) {
+        1 + sinusoidal_function(t = t, sinusoid_coefficients = x, sinusoid_frequencies = omega)
+      }) |>
+      data.frame(model = 5, t = t)
+  ) |>
+  melt(id.vars = c("model", "t")) |>
+  mutate(model = as.factor(model)) |>
+  group_by(model, t) |>
+  summarise(
+    average = mean(value),
+    ci.low = hdi(value, credMass = 0.95)[1],
+    ci.up = hdi(value, credMass = 0.95)[2],
+    .groups = "drop"
+  )
+
+alpha_posterior |>
+  ggplot() +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_ribbon(
+    aes(x = t, ymin = ci.low, ymax = ci.up, fill = model),
+    alpha = 0.25
+  ) +
+  geom_line(aes(x = t, y = average, color = model)) +
+  scale_fill_viridis_d(labels = c(TeX("$M_3$"), TeX("$M_4$"), TeX("$M_5$"))) +
+  scale_color_viridis_d(labels = c(TeX("$M_3$"), TeX("$M_4$"), TeX("$M_5$"))) +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 6)) +
+  my_theme +
+  labs(
+    title = "Absolute-time effect on offspring intensity",
+    x = "Time (24-hour clock)",
+    y = TeX("$\\alpha (t)$"),
+    color = NULL,
+    fill = NULL
+  )
+```
+
+## Table 3
+
+Bayes factors for each model relative to $\mathcal{M}_4$.
+
+```{r bayes_factor_table_df}
+bf_table_df <- data.frame(
+  Model = c(
+    "$\\mathcal{M}_1$", "$\\mathcal{M}_2$", "$\\mathcal{M}_3$",
+    "$\\mathcal{M}_4$", "$\\mathcal{M}_5$"
+  ),
+  BF = c(
+    bayes_factor(evidence_M1, evidence_M4, log = TRUE)$bf,
+    bayes_factor(evidence_M2, evidence_M4, log = TRUE)$bf,
+    bayes_factor(evidence_M3, evidence_M4, log = TRUE)$bf,
+    bayes_factor(evidence_M4, evidence_M4, log = TRUE)$bf,
+    bayes_factor(evidence_M5, evidence_M4, log = TRUE)$bf
+  )
+) |>
+  mutate(BF = round(BF, digits = 2)) |>
+  mutate("$\\ln \\mathcal{BF}_{l 4}$" = BF) |>
+  select(-BF)
+```
+
+```{r evidence_estimate, results='asis'}
+bf_table_df |>
+  extract(, 2) |>
+  t() |>
+  set_colnames(c(
+    "$\\mathcal{M}_1$", "$\\mathcal{M}_2$", "$\\mathcal{M}_3$",
+    "$\\mathcal{M}_4$", "$\\mathcal{M}_5$"
+  )) |>
+  set_rownames("$\\ln \\mathcal{BF}_{l4}$") |>
+  xtable(
+    label = "tab:bf_estimates",
+    caption = "Estimated log Bayes factor for each candidate model relative to $\\mathcal M_4$, that is, $\\ln \\mathcal{BF}_{l4}$ for $l = 1, \\dots, 5$. Note that the evidence supporting each candidate model is estimated from the sampled posterior distribution $p \\left( \\theta \\mid \\boldsymbol y_{\\operatorname{train}}, \\mathcal M_l \\right)$ via bridge sampling. In each case, the \\texttt{bridgesampling} algorithm reports a coefficient of variation for the evidence estimate of $<0.005$, indicating that we have a precise estimate for each model evidence and, as a result, the corresponding Bayes factors. We find decisive evidence to support our inclusion of a circadian rhythm in the offspring intensity. Furthermore, we find decisive support for the inclusion of heterogeneous immigrant and offspring reproduction numbers.",
+    align = "|l|c|c|c|c|c|"
+  ) |>
+  print.xtable(
+    include.rownames = TRUE,
+    include.colnames = TRUE,
+    type = "latex",
+    sanitize.text.function = function(x) x,
+    comment = FALSE
+  )
+```
+
+We also check the coefficient of variation associated with each model evidence.
+
+```{r check_bridgesampling_cv}
+bridgesampling::error_measures(evidence_M1)$cv
+bridgesampling::error_measures(evidence_M2)$cv
+bridgesampling::error_measures(evidence_M3)$cv
+bridgesampling::error_measures(evidence_M4)$cv
+bridgesampling::error_measures(evidence_M5)$cv
+```

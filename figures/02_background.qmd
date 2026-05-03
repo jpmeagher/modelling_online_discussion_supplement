@@ -1,0 +1,490 @@
+---
+title: "Manuscript Figures & Tables"
+subtitle: "Background"
+author: "J.P. Meagher"
+format:
+  pdf:
+    keep-tex: true
+    fig-width: 6
+    fig-crop: false
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    crop: null
+    dev: "pdf"
+---
+
+```{r setup}
+library(onlineMessageboardActivity)
+library(dplyr)
+library(ggplot2)
+library(latex2exp)
+library(lubridate)
+library(magrittr)
+library(zoo)
+library(ggpubr)
+
+source(here::here("code_modules/plotting.R"))
+```
+
+# Exploratory analysis
+
+This section of the manuscript includes three figures exploring various aspects of the `r/ireland` dataset.
+
+## Figure 1
+
+This figure highlights the branching structure associated with a typical sequence of discussions and the circadian rhythm associated with overall activity on the subreddit.
+
+```{r data_snapshot_plot}
+# Select an interval to examine (cherry-picked for illustration)
+lower <- ymd_hms(20190415160000)
+upper <- lower + minutes(30)
+
+# Identify the discussions in the interval
+discussions <- messageboard_df |>
+  filter(parent_id == 0) |>
+  filter(time > lower & time < upper) |>
+  use_series(discussion)
+
+# Pull out and prepare the subset of discussions
+subset <- messageboard_df |>
+  filter(discussion %in% discussions) |>
+  mutate(
+    parent_id = refactor_branching_structure(
+      id = id,
+      parent_id = parent_id,
+      is_immigrant = (parent_id == 0),
+      S = 20
+    )
+  ) |>
+  mutate(id = row_number()) |>
+  mutate(
+    t = as.numeric(
+      difftime(
+        time,
+        dmy_hms(010419000000, tz = "Europe/London"),
+        units = "hours"
+      )
+    )
+  ) |>
+  mutate(t = t - min(t)) |>
+  group_by(discussion) |>
+  mutate(tau = t - min(t)) |>
+  ungroup() |>
+  mutate(type = parent_id != 0) |>
+  mutate(type = factor(type, labels = c("post", "comment")))
+
+# Specify the generation of each node
+generation <- rep(NA, nrow(subset))
+generation[subset$parent_id == 0] <- 0
+for (i in 1:nrow(subset)) {
+  if (is.na(generation[i])) {
+    generation[i] <- generation[subset$parent_id[i]] + 1
+  }
+}
+
+subset <- subset |>
+  mutate(generation = generation) |>
+  mutate(generation = factor(generation, ordered = TRUE)) |>
+  mutate(
+    n_offspring = tabulate(parent_id + 1, nbins = nrow(subset) + 1)[-1]
+  )
+
+# Set the origin for each edge in the branching structure
+# Perturb child nodes along the x-axis for clearer plotting
+new_v <- subset$parent_id
+perturb <- source_x <- source_y <- off_ind <- rep(0, nrow(subset))
+per_range <- 0.05
+
+for (i in 1:nrow(subset)) {
+  if (subset$parent_id[i] != 0) {
+    off_ind[new_v[i]] <- off_ind[new_v[i]] + 1
+    if (subset$generation[i] == 1) {
+      perturb[i] <- seq(
+        -per_range,
+        per_range,
+        length.out = subset$n_offspring[new_v[i]] + 2
+      )[off_ind[new_v[i]] + 1]
+    } else {
+      perturb[i] <- perturb[new_v[i]] +
+        seq(
+          -per_range,
+          per_range,
+          length.out = subset$n_offspring[new_v[i]] + 2
+        )[off_ind[new_v[i]] + 1]
+    }
+    source_x[i] <- (
+      subset$time -
+        (seconds((subset$tau + perturb) * 60 * 60))
+    )[new_v[i]]
+    source_y[i] <- subset$tau[new_v[i]]
+  } else {
+    source_x[i] <- subset$time[i]
+    source_y[i] <- NA
+  }
+}
+
+# Convert x axis to clock time
+subset$perturb <- perturb
+subset$source_x <- as.POSIXct(
+  source_x,
+  origin = "1970-01-01",
+  tz = "Europe/London"
+)
+subset$source_y <- source_y
+
+# Make plot
+gg_snapshot <- ggplot(subset) +
+  geom_segment(
+    aes(
+      x = time - seconds((tau + perturb) * 60 * 60),
+      y = tau + 1,
+      xend = source_x,
+      yend = source_y + 1
+    )
+  ) +
+  geom_point(
+    aes(
+      x = time - seconds((tau + perturb) * 60 * 60),
+      y = tau + 1,
+      color = generation
+    )
+  ) +
+  my_theme +
+  theme(legend.position = "none") +
+  scale_y_log10(breaks = 2^(0:5), labels = 2^(0:5) - 1) +
+  scale_color_viridis_d() +
+  labs(
+    title = "The structure of discussion trees on r/ireland",
+    x = "Monday, April 15, 2019",
+    y = TeX("Hours since post"),
+    color = NULL
+  )
+```
+
+```{r activity_levels_plot}
+n_buckets <- 5
+window <- 3
+
+gg_activity <- messageboard_df |>
+  mutate(moy = month(time)) |>
+  mutate(dow = wday(time, week_start = 1)) |>
+  mutate(dow = factor(dow)) |>
+  mutate(dom = day(time)) |>
+  mutate(hod = hour(time)) |>
+  mutate(moh = minute(time)) |>
+  mutate(
+    bucket = sapply(
+      moh, function(x) sum(x >= seq(0, 60, length.out = n_buckets + 1))
+    )
+  ) |>
+  group_by(moy, dow, dom, hod, bucket) |>
+  summarise(count = max(0, length(id)), .groups = "drop") |>
+  mutate(t = hod + (bucket - 0.5) / n_buckets) |>
+  mutate(date = paste0(dom, "-", moy)) |>
+  mutate(
+    ma_count = n_buckets * rollmean(count, window * n_buckets, na.pad = TRUE)
+  ) |>
+  ggplot() +
+  geom_line(
+    aes(x = t, y = ma_count, group = date),
+    color = "#440154",
+    alpha = 0.5
+  ) +
+  my_theme +
+  theme(legend.position = "none") +
+  scale_color_viridis_d() +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = TeX("Daily activity levels on r/ireland"),
+    subtitle = paste0(window, "-hour moving average"),
+    x = "Hour of the day (IST)",
+    y = "Nodes per hour"
+  )
+```
+
+```{r 02_background_fig-data_exploration, fig.height=4, fig.width=6}
+ggarrange(
+  gg_snapshot,
+  gg_activity,
+  labels = "auto",
+  nrow = 2
+)
+```
+
+## Figure 2
+
+This figure highlights that the mean number of replies to each point within the subreddit seems to follow a circadian rhythm and that the distribution of the number of replies to each point is overdispersed relative to the Poisson distribution.
+
+```{r mean_replies}
+n_buckets <- 5
+window <- 3
+
+gg_mean_replies <- messageboard_df |>
+  mutate(
+    z = tabulate(parent_id + 1, nbins = nrow(messageboard_df) + 1)[-1]
+  ) |>
+  mutate(moy = month(time)) |>
+  mutate(dow = wday(time, week_start = 1)) |>
+  mutate(dow = factor(dow)) |>
+  mutate(dom = day(time)) |>
+  mutate(hod = hour(time)) |>
+  mutate(moh = minute(time)) |>
+  mutate(
+    bucket = sapply(
+      moh,
+      function(x) sum(x >= seq(0, 60, length.out = n_buckets + 1))
+    )
+  ) |>
+  filter(parent_id == 0) |>
+  group_by(moy, dow, dom, hod, bucket) |>
+  summarise(replies = mean(z), .groups = "drop") |>
+  mutate(t = hod + (bucket - 0.5) / n_buckets) |>
+  mutate(date = paste0(dom, "-", moy)) |>
+  mutate(
+    ma_replies = rollmean(replies, window * n_buckets, na.pad = TRUE)
+  ) |>
+  group_by(t) |>
+  summarise(mean_replies = mean(ma_replies, na.rm = TRUE), .groups = "drop") |>
+  cbind(type = "post") |>
+  rbind(
+    messageboard_df |>
+      mutate(
+        z = tabulate(parent_id + 1, nbins = nrow(messageboard_df) + 1)[-1]
+      ) |>
+      mutate(moy = month(time)) |>
+      mutate(dow = wday(time, week_start = 1)) |>
+      mutate(dow = factor(dow)) |>
+      mutate(dom = day(time)) |>
+      mutate(hod = hour(time)) |>
+      mutate(moh = minute(time)) |>
+      mutate(
+        bucket = sapply(
+          moh,
+          function(x) sum(x >= seq(0, 60, length.out = n_buckets + 1))
+        )
+      ) |>
+      filter(parent_id != 0) |>
+      group_by(moy, dow, dom, hod, bucket) |>
+      summarise(replies = mean(z), .groups = "drop") |>
+      mutate(t = hod + (bucket - 0.5) / n_buckets) |>
+      mutate(date = paste0(dom, "-", moy)) |>
+      mutate(
+        ma_replies = rollmean(replies, window * n_buckets, na.pad = TRUE)
+      ) |>
+      group_by(t) |>
+      summarise(mean_replies = mean(ma_replies, na.rm = TRUE), .groups = "drop") |>
+      cbind(type = "comment")
+  ) |>
+  ggplot() +
+  geom_line(
+    aes(x = t, y = mean_replies, color = type)
+  ) +
+  my_theme +
+  theme(legend.position = "bottom") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  scale_color_viridis_d() +
+  labs(
+    title = TeX("Replies on r/ireland"),
+    subtitle = paste0(window, "-hour moving average"),
+    x = "Hour of the day (IST)",
+    y = "Number of replies",
+    color = NULL
+  )
+```
+
+```{r reply_distribution}
+R <- messageboard_df |>
+  mutate(z = tabulate(parent_id + 1, nbins = nrow(messageboard_df) + 1)[-1]) |>
+  use_series(z) |>
+  mean()
+
+posts_z <- messageboard_df |>
+  mutate(z = tabulate(parent_id + 1, nbins = nrow(messageboard_df) + 1)[-1]) |>
+  filter(parent_id == 0) |>
+  use_series(z) |>
+  tabulate()
+
+comments_z <- messageboard_df |>
+  mutate(z = tabulate(parent_id + 1, nbins = nrow(messageboard_df) + 1)[-1]) |>
+  filter(parent_id != 0) |>
+  use_series(z) |>
+  tabulate()
+
+gg_reply_distribution <- left_join(
+  data.frame(Posts = posts_z / sum(posts_z)) |>
+    mutate(n = -1 + row_number()) |>
+    filter(Posts != 0),
+  data.frame(Comments = comments_z / sum(comments_z)) |>
+    mutate(n = -1 + row_number()) |>
+    filter(Comments != 0),
+  by = "n"
+) |>
+  reshape2::melt(id.vars = "n") |>
+  ggplot() +
+  geom_line(
+    data = data.frame(x = 0:9, y = dpois(0:9, lambda = R)),
+    aes(x = x, y = y),
+    lty = 2
+  ) +
+  geom_point(
+    aes(x = n, y = value, color = variable)
+  ) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  scale_y_log10() +
+  my_theme +
+  theme(legend.position = "top") +
+  labs(
+    title = TeX("Reply count distribution"),
+    x = "Number of replies",
+    y = "Density (log scale)",
+    fill = NULL,
+    color = NULL
+  )
+```
+
+```{r 02_background_fig-reply_distribution_exploration, fig.height=3, fig.width=6}
+ggarrange(
+  gg_mean_replies, gg_reply_distribution,
+  nrow = 1, labels = "auto",
+  common.legend = TRUE, legend = "bottom"
+)
+```
+
+## Figure 3
+
+The distribution of generation intervals depends on the time of day that a point arrives.
+
+```{r first_reply_interval}
+gg_reply_interval_0_2 <- messageboard_df |>
+  mutate(
+    t = as.numeric(
+      difftime(
+        time,
+        dmy_hms(010419000000, tz = "Europe/London"),
+        units = "hours"
+      )
+    )
+  ) |>
+  mutate(
+    parent_t = sapply(
+      parent_id,
+      function(i) {
+        if (i == 0) NA else t[i]
+      }
+    )
+  ) |>
+  mutate(
+    type = sapply(
+      parent_id,
+      function(i) {
+        if (i == 0) {
+          NA
+        } else if (parent_id[i] == 0) {
+          "post"
+        } else {
+          "comment"
+        }
+      }
+    )
+  ) |>
+  mutate(tau = t - parent_t) |>
+  mutate(parent_tod = mod(parent_t, 24)) |>
+  mutate(parent_tod = floor(parent_tod)) |>
+  filter(parent_tod > 0 & parent_tod < 2) |>
+  filter(tau < 24) |>
+  ggplot() +
+  geom_histogram(
+    aes(x = tau, y = after_stat(density), fill = type),
+    alpha = 0.5,
+    position = "identity",
+    binwidth = 0.5,
+    boundary = 0
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  my_theme +
+  theme(legend.position = "top") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = "Reply interval distribution",
+    subtitle = "Parent nodes during 00:00-02:00",
+    x = TeX("Hours since parent node"),
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  )
+```
+
+```{r second_reply_interval}
+gg_reply_interval_12_14 <- messageboard_df |>
+  mutate(
+    t = as.numeric(
+      difftime(
+        time,
+        dmy_hms(010419000000, tz = "Europe/London"),
+        units = "hours"
+      )
+    )
+  ) |>
+  mutate(
+    parent_t = sapply(
+      parent_id,
+      function(i) {
+        if (i == 0) NA else t[i]
+      }
+    )
+  ) |>
+  mutate(
+    type = sapply(
+      parent_id,
+      function(i) {
+        if (i == 0) {
+          NA
+        } else if (parent_id[i] == 0) {
+          "post"
+        } else {
+          "comment"
+        }
+      }
+    )
+  ) |>
+  mutate(tau = t - parent_t) |>
+  mutate(parent_tod = mod(parent_t, 24)) |>
+  mutate(parent_tod = floor(parent_tod)) |>
+  filter(parent_tod > 12 & parent_tod < 14) |>
+  filter(tau < 24) |>
+  ggplot() +
+  geom_histogram(
+    aes(x = tau, y = after_stat(density), fill = type),
+    alpha = 0.5,
+    position = "identity",
+    binwidth = 0.5,
+    boundary = 0
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  my_theme +
+  theme(legend.position = "top") +
+  scale_x_continuous(breaks = c(0, 6, 12, 18, 24)) +
+  labs(
+    title = "Reply interval distribution",
+    subtitle = "Parent nodes during 12:00-14:00",
+    x = TeX("Hours since parent node"),
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  )
+```
+
+```{r 02_background_fig-reply_interval_exploration, fig.height=3, fig.width=6}
+ggarrange(
+  gg_reply_interval_0_2, gg_reply_interval_12_14,
+  nrow = 1, labels = "auto",
+  common.legend = TRUE, legend = "bottom"
+)
+```
