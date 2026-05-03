@@ -127,7 +127,7 @@ evidence_M4 <- readRDS(here::here("evidence/evidence_M4.RDS"))
 evidence_M5 <- readRDS(here::here("evidence/evidence_M5.RDS"))
 ```
 
-## Table 2
+## Posterior parameter estimates
 
 This table summarises posterior distributions for each parameter of the model relating to offspring processes.
 
@@ -223,7 +223,7 @@ fit_M4 |>
   round(digits = 2)
 ```
 
-## Figure 5
+## Posterior activity function
 
 Posterior inference for the activity function $\alpha(t)$.
 
@@ -286,7 +286,7 @@ alpha_posterior |>
   )
 ```
 
-## Table 3
+## Bayes factors
 
 Bayes factors for each model relative to $\mathcal{M}_4$.
 

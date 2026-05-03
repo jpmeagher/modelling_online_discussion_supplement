@@ -35,7 +35,7 @@ bayesplot_theme_set(my_theme)
 
 # Overview
 
-This document provides MCMC convergence diagnostics for the fitted models M1–M5. We focus primarily on the preferred model M5, with summary statistics across all models.
+This document provides MCMC convergence diagnostics for the fitted models M1–M5. We focus primarily on the preferred model M4, with summary statistics across all models.
 
 # Computation Times
 
@@ -130,11 +130,11 @@ convergence_summary |>
 
 All models achieve $\hat{R} < 1.01$ for all parameters, indicating excellent convergence. Effective sample sizes are adequate across all models, with minimum $n_\text{eff} > 1000$ in most cases, providing reliable posterior inference despite the relatively short chains (4000 post-warmup draws total).
 
-# Trace Plots for Model M5
+# Trace Plots for Model 4
 
 We examine trace plots for the key parameters in the full generative model M4: immigrant and offspring reproduction numbers ($\mu_1, \mu_2$), generation interval decay rates ($\eta_1, \eta_2$), immigrant dispersion parameters ($\psi_1, \psi_2$), and selected circadian rhythm coefficients.
 
-```{r 99_mcmc_appendix_fig-trace_plots_mu_eta, fig.height=6, fig.width=7, fig.cap="Trace plots for reproduction number and generation interval parameters in M5. All four chains mix well with no apparent trends or stuck chains, indicating good convergence."}
+```{r 99_mcmc_appendix_fig-trace_plots_mu_eta, fig.height=6, fig.width=7, fig.cap="Trace plots for reproduction number and generation interval parameters in Model 4. All four chains mix well with no apparent trends or stuck chains, indicating good convergence."}
 posterior_M4 <- as.array(fit_M4)
 
 mcmc_trace(
@@ -150,7 +150,7 @@ mcmc_trace(
   )
 ```
 
-```{r 99_mcmc_appendix_fig-trace_plots_psi, fig.height=3, fig.width=7, fig.cap="Trace plot for the immigrant dispersion parameter in M5. The chain shows excellent mixing across all four chains."}
+```{r 99_mcmc_appendix_fig-trace_plots_psi, fig.height=3, fig.width=7, fig.cap="Trace plot for the immigrant dispersion parameter in M 4. The chain shows excellent mixing across all four chains."}
 mcmc_trace(
   posterior_M4,
   pars = c("psi[1]", "psi[2]"),
@@ -164,7 +164,7 @@ mcmc_trace(
   )
 ```
 
-```{r 99_mcmc_appendix_fig-trace_plots_alpha, fig.height=6, fig.width=7, fig.cap="Trace plots for circadian rhythm coefficients in M5. All coefficients show good mixing and stationarity."}
+```{r 99_mcmc_appendix_fig-trace_plots_alpha, fig.height=6, fig.width=7, fig.cap="Trace plots for circadian rhythm coefficients in M4. All coefficients show good mixing and stationarity."}
 mcmc_trace(
   posterior_M4,
   pars = c("alpha[1]", "alpha[2]", "alpha[3]", "alpha[4]"),
@@ -184,7 +184,7 @@ All trace plots show well-mixed chains with no apparent trends, stuck chains, or
 
 We examine autocorrelation functions (ACF) for the same key parameters to assess the degree of autocorrelation in the posterior samples.
 
-```{r acf_plots_mu_eta, fig.height=6, fig.width=7, fig.cap="Autocorrelation plots for reproduction number and generation interval parameters in M5. Autocorrelation drops quickly to near zero within 10-20 lags, indicating efficient posterior sampling."}
+```{r acf_plots_mu_eta, fig.height=6, fig.width=7, fig.cap="Autocorrelation plots for reproduction number and generation interval parameters in M4. Autocorrelation drops quickly to near zero within 10-20 lags, indicating efficient posterior sampling."}
 mcmc_acf(
   posterior_M4,
   pars = c("mu[1]", "mu[2]", "eta[1]", "eta[2]"),
@@ -206,7 +206,7 @@ mcmc_acf(
   )
 ```
 
-```{r acf_plots_alpha, fig.height=6, fig.width=7, fig.cap="Autocorrelation plots for circadian rhythm coefficients in M5. All coefficients show low autocorrelation beyond lag 10-15."}
+```{r acf_plots_alpha, fig.height=6, fig.width=7, fig.cap="Autocorrelation plots for circadian rhythm coefficients in M4. All coefficients show low autocorrelation beyond lag 10-15."}
 mcmc_acf(
   posterior_M4,
   pars = c("alpha[1]", "alpha[2]", "alpha[3]", "alpha[4]"),

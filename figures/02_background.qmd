@@ -34,7 +34,7 @@ source(here::here("code_modules/plotting.R"))
 
 This section of the manuscript includes three figures exploring various aspects of the `r/ireland` dataset.
 
-## Figure 1
+## Discussion structure and daily activity
 
 This figure highlights the branching structure associated with a typical sequence of discussions and the circadian rhythm associated with overall activity on the subreddit.
 
@@ -215,7 +215,7 @@ ggarrange(
 )
 ```
 
-## Figure 2
+## Reply counts and overdispersion
 
 This figure highlights that the mean number of replies to each point within the subreddit seems to follow a circadian rhythm and that the distribution of the number of replies to each point is overdispersed relative to the Poisson distribution.
 
@@ -355,7 +355,7 @@ ggarrange(
 )
 ```
 
-## Figure 3
+## Time-of-day dependence in generation intervals
 
 The distribution of generation intervals depends on the time of day that a point arrives.
 

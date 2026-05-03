@@ -34,7 +34,7 @@ source(here::here("code_modules/plotting.R"))
 
 # Appendix: Circadian Rhythm
 
-## Figure 8
+## Spectral analysis
 
 Spectral analysis of the total points per hour.
 
@@ -61,7 +61,7 @@ data.frame(f = 24 * spec$freq, d = log(abs(spec$spec)^2)) |>
   my_theme
 ```
 
-## Table 5
+## Bayes factors for frequency basis selection
 
 Assess evidence for each basis function.
 
@@ -113,7 +113,7 @@ bf_table_df |>
   )
 ```
 
-## Figure 9
+## Activity function under each basis
 
 Activity function under each frequency basis model.
 

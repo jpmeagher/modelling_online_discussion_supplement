@@ -239,7 +239,7 @@ alt_individual_tree_plot
 
 \newpage
 
-## Figure 4
+## Simulated cluster and model components
 
 This figure presents a synthetic cluster, highlighting relevant features of the model. The figure consists of 4 elements.
 

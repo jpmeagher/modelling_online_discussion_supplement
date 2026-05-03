@@ -32,7 +32,7 @@ source(here::here("code_modules/plotting.R"))
 source(here::here("code_modules/helpers.R"))
 ```
 
-## Figure 7
+## Goodness-of-fit assessment
 
 This figure presents an analysis of the goodness of fit for each model to the set of all discussions seeded during the training interval.
 
@@ -82,7 +82,7 @@ gg_ks <- ks_boot |>
   )
 ```
 
-We then compare the mean discussion size for 3-hour blocks during the day coomparing our the simplest generative model and the full generative model to the empirical data.
+We then compare the mean discussion size for 3-hour blocks during the day comparing our the simplest generative model and the full generative model to the empirical data.
 
 ```{r time_evolution_data}
 ds_df <- discussion_size |>
