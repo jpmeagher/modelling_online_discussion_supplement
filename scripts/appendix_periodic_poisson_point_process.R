@@ -1,4 +1,3 @@
-
 # packages ----------------------------------------------------------------
 
 # devtools::install_github("jpmeagher/onlineMessageboardActivity")
@@ -15,7 +14,7 @@ options(mc.cores = parallel::detectCores())
 
 # data --------------------------------------------------------------------
 
-train_df <- train_df %>% 
+train_df <- train_df |>
   filter(parent_id == 0)
 
 # specify hyper-parameters ------------------------------------------------
@@ -29,8 +28,10 @@ omega <- structure(2 * pi * (1:K / period), dim = K)
 # fit periodic poisson process model --------------------------------------
 
 fit_pppm <- fit_periodic_point_process(
-  t = train_df$t, immigrant_observation_interval = days * period,
-  K = K, omega = omega,
+  t = train_df$t,
+  immigrant_observation_interval = days * period,
+  K = K,
+  omega = omega,
   seed = 105
 )
 

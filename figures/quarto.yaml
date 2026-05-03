@@ -1,0 +1,17 @@
+title: "Manuscript Figures & Tables"
+author: "J.P. Meagher"
+date: today
+format:
+  pdf:
+    keep-tex: true
+    fig-width: 6
+    fig-crop: false
+    fig-pos: "H"
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk: 
+    crop: null
+    dev: "pdf"
