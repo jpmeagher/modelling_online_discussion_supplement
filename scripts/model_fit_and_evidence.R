@@ -7,28 +7,30 @@ library(dplyr)
 library(xtable)
 library(bridgesampling)
 library(rstan)
+library(tictoc)
 
 # Stan options ------------------------------------------------------------
 
-rstan_options(auto_write = TRUE)
-options(mc.cores = parallel::detectCores())
+options(mc.cores = 4)
 
 # Prepare data ------------------------------------------------------------
 
-train_df <- train_df %>% 
-  arrange(discussion) %>% 
-  group_by(discussion) %>% # group discussions 
+# Note that it takes a couple of mintes to prepare the data
+# the refactor_branching_structure function is the bottleneck
+train_df <- onlineMessageboardActivity::train_df |>
+  arrange(discussion) |>
+  group_by(discussion) |>
   mutate(
     within_discussion_parent_id = refactor_branching_structure(
-      id = id, 
-      parent_id = parent_id, 
-      is_immigrant = parent_id == 0, 
+      id = id,
+      parent_id = parent_id,
+      is_immigrant = parent_id == 0,
       S = length(id)
     )
-  ) %>% # create discussion branching structures
+  ) |>
   mutate(
     within_discussion_id = seq_along(id)
-    ) %>% 
+  ) |>
   ungroup()
 a <- 48
 
@@ -40,62 +42,115 @@ omega <- structure(2 * pi * (1:K / period), dim = K) # basis frequencies
 
 # Fit and assess M_1 ------------------------------------------------------
 
+tic("M1 fit")
 fit_M1 <- fit_branching_point_process(
-  t = train_df$t, 
+  t = train_df$t,
   branching_structure = train_df$within_discussion_parent_id,
   observation_interval = a,
   seed = 101
-) # approx 2 min
-evidence_M1 <- bridge_sampler(fit_M1) # < 1 min
+)
+toc(log = TRUE)
+
+tic("M1 evidence")
+evidence_M1 <- bridge_sampler(fit_M1)
+toc(log = TRUE)
 
 # Fit and assess M_2 ------------------------------------------------------
 
+tic("M2 fit")
 fit_M2 <- fit_branching_point_process(
-  t = train_df$t, 
+  t = train_df$t,
   branching_structure = train_df$within_discussion_parent_id,
-  observation_interval = a, 
+  observation_interval = a,
   point_type = (train_df$within_discussion_parent_id > 0) + 1,
   seed = 102
-) # approx 2 min
-evidence_M2 <- bridge_sampler(fit_M2) # < 1 min
+)
+toc(log = TRUE)
+
+tic("M2 evidence")
+evidence_M2 <- bridge_sampler(fit_M2)
+toc(log = TRUE)
 
 # Fit and assess M_3 ------------------------------------------------------
 
+tic("M3 fit")
 fit_M3 <- fit_branching_point_process(
-  t = train_df$t, 
+  t = train_df$t,
   branching_structure = train_df$within_discussion_parent_id,
-  observation_interval = a, 
+  observation_interval = a,
   point_type = (train_df$within_discussion_parent_id > 0) + 1,
-  K = K, omega = omega,
+  K = K,
+  omega = omega,
   seed = 103
-) # approx 10 min
-evidence_M3 <- bridge_sampler(fit_M3) # < 1 min
+)
+toc(log = TRUE)
+
+tic("M3 evidence")
+evidence_M3 <- bridge_sampler(fit_M3)
+toc(log = TRUE)
 
 # Fit and assess M_4 ------------------------------------------------------
 
+tic("M4 fit")
 fit_M4 <- fit_branching_point_process(
-  t = train_df$t, 
+  t = train_df$t,
   branching_structure = train_df$within_discussion_parent_id,
-  observation_interval = a, 
+  observation_interval = a,
   point_type = (train_df$within_discussion_parent_id > 0) + 1,
-  K = K, omega = omega,
-  is_hetero = c(T, T),
+  K = K,
+  omega = omega,
+  is_hetero = c(TRUE, TRUE),
   seed = 104
-) # approx 10 minutes
-evidence_M4 <- bridge_sampler(fit_M4) # < 1 min
+)
+toc(log = TRUE)
+
+tic("M4 evidence")
+evidence_M4 <- bridge_sampler(fit_M4)
+toc(log = TRUE)
 
 # Fit and assess M_5 ------------------------------------------------------
 
+tic("M5 fit")
 fit_M5 <- fit_branching_point_process(
-  t = train_df$t, 
+  t = train_df$t,
   branching_structure = train_df$within_discussion_parent_id,
-  observation_interval = a, 
+  observation_interval = a,
   point_type = (train_df$within_discussion_parent_id > 0) + 1,
-  K = K, omega = omega,
-  is_hetero = c(T, F),
+  K = K,
+  omega = omega,
+  is_hetero = c(TRUE, FALSE),
   seed = 105
-) # approx 10 minutes
-evidence_M5 <- bridge_sampler(fit_M5) # < 1 min
+)
+toc(log = TRUE)
+
+tic("M5 evidence")
+evidence_M5 <- bridge_sampler(fit_M5)
+toc(log = TRUE)
+
+# Collect timing results --------------------------------------------------
+
+timing_log <- tic.log(format = FALSE)
+
+timing_df <- tibble(
+  task = purrr::map_chr(timing_log, "msg"),
+  elapsed_sec = purrr::map_dbl(timing_log, ~ .x$toc - .x$tic)
+) |>
+  tidyr::separate_wider_delim(
+    task,
+    delim = " ",
+    names = c("model", "stage")
+  ) |>
+  tidyr::pivot_wider(
+    names_from = stage,
+    values_from = elapsed_sec,
+    names_prefix = "elapsed_sec_"
+  ) |>
+  mutate(
+    elapsed_min_fit = elapsed_sec_fit / 60,
+    elapsed_min_evidence = elapsed_sec_evidence / 60
+  )
+
+tic.clearlog()
 
 # Save results for analysis -----------------------------------------------
 
@@ -113,3 +168,5 @@ saveRDS(evidence_M3, "evidence/evidence_M3.RDS")
 saveRDS(evidence_M4, "evidence/evidence_M4.RDS")
 saveRDS(evidence_M5, "evidence/evidence_M5.RDS")
 
+# Timing
+saveRDS(timing_df, "models/timing_df.RDS")
