@@ -10,3 +10,6 @@ todo.md
 /responseLetter
 /manuscript
 /draftRevisions
+/figures/*_files/
+/figures/*.tex
+/figures/*.pdf
